@@ -12,6 +12,7 @@ import { renderContextSnapshot, renderPrompt } from '@deepseek-ai/dsh-system-pro
 import { validateJsonSchemaValue, type JsonSchemaNode, type ToolDefinition, type ToolRunContext, type ToolExecution } from '@deepseek-ai/dsh-tools';
 import type {} from '@deepseek-ai/dsh-working-directory';
 import type {} from '@deepseek-ai/dsh-agent-preset-registry';
+import type {} from '@deepseek-ai/dsh-agent-default-model';
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace';
 import { buildEmployeePrompt, buildEmployeeConsultationPrompt } from '../domain/prompt.js';
 import { CONFIRMED_ITEMS_FILE_SUFFIX, CONFIRMED_ITEMS_MEDIA_TYPE } from '../domain/confirmed-items.js';
@@ -232,6 +233,9 @@ export class WorkforceRuntime {
       if ('error' in result) throw new Error(`${result.error.code}: ${result.error.message}`);
       const agent = 'agent' in result ? result.agent : result;
       if (agent.id !== sessionId) throw new Error('官方控制器返回了不同的会话标识');
+      const nativeSelection = this.ctx.get('agentDefaultModel')?.currentSelection();
+      if (!nativeSelection?.provider || !nativeSelection.model) throw new Error('DSH 尚未设置可恢复的默认模型');
+      agent.model.select(nativeSelection);
       this.pendingSessionReopens.delete(sessionId);
       return true;
     } catch (cause) {
@@ -242,24 +246,24 @@ export class WorkforceRuntime {
   }
 
   /** Reserve a tracked owner turn without creating, replaying or owning the native Agent. */
-  openConversationTurn(agent: Agent, turnKey: string, requestText: string, view: ConversationWorkflowView, signal?: AbortSignal): Promise<NativeWorkflowLease> {
+  openConversationTurn(agent: Agent, turnKey: string, requestText: string, view: ConversationWorkflowView, signal?: AbortSignal, modelSelection?: Readonly<ModelSelection>): Promise<NativeWorkflowLease> {
     const existing = this.conversationLeases.get(turnKey);
     if (existing) return existing;
-    const opening = this.prepareConversationTurn(agent, turnKey, requestText, view, signal);
+    const opening = this.prepareConversationTurn(agent, turnKey, requestText, view, signal, undefined, modelSelection);
     this.conversationLeases.set(turnKey, opening);
     return opening;
   }
 
   /** Explicit Chat binding adapts this native session, never opens a work-order session. */
-  openEmployeeConversationTurn(agent: Agent, turnKey: string, requestText: string, resident: ResolvedConversationEmployee, signal?: AbortSignal): Promise<NativeWorkflowLease> {
+  openEmployeeConversationTurn(agent: Agent, turnKey: string, requestText: string, resident: ResolvedConversationEmployee, signal?: AbortSignal, modelSelection?: Readonly<ModelSelection>): Promise<NativeWorkflowLease> {
     const existing = this.conversationLeases.get(turnKey);
     if (existing) return existing;
-    const opening = this.prepareConversationTurn(agent, turnKey, requestText, undefined, signal, resident);
+    const opening = this.prepareConversationTurn(agent, turnKey, requestText, undefined, signal, resident, modelSelection);
     this.conversationLeases.set(turnKey, opening);
     return opening;
   }
 
-  private async prepareConversationTurn(agent: Agent, turnKey: string, requestText: string, view: ConversationWorkflowView | undefined, signal?: AbortSignal, resident?: ResolvedConversationEmployee): Promise<NativeWorkflowLease> {
+  private async prepareConversationTurn(agent: Agent, turnKey: string, requestText: string, view: ConversationWorkflowView | undefined, signal?: AbortSignal, resident?: ResolvedConversationEmployee, modelSelection?: Readonly<ModelSelection>): Promise<NativeWorkflowLease> {
     let run: WorkforceRun | undefined;
     let live: LiveRun | undefined;
     let resolveLive: (() => void) | undefined;
@@ -328,7 +332,10 @@ export class WorkforceRuntime {
       const controller = ownedLive.controller;
       const project = this.store.snapshot().projects.find(project => project.id === ownedRun.projectId)!;
       this.authorities(ownedRun);
-      const model = await abortable(this.resolveModel(ownedRun), controller.signal);
+      const configuredModel = ownedRun.employeeSnapshot.modules.model;
+      if (modelSelection && configuredModel.mode === 'override' && (configuredModel.provider !== modelSelection.provider || configuredModel.model !== modelSelection.model
+        || (configuredModel.reasoningEffort || undefined) !== modelSelection.reasoningEffort)) throw new Error('员工模型在本轮准备期间发生变化，请重新发送');
+      const model = modelSelection ?? await abortable(this.resolveModel(ownedRun), controller.signal);
       const modelInfo = await abortable(this.ctx.llm.resolveModelInfo(model.provider, model.model, controller.signal), controller.signal);
       const contextWindow = modelInfo.context?.contextWindow;
       const outputReserve = Math.min(8_000, Math.floor((contextWindow ?? 64_000) / 4));
@@ -395,7 +402,7 @@ export class WorkforceRuntime {
         ...(this.config.maxTreeTokens > 0 ? { maxTokens: outputReserve } : {}),
         onStreamChunk: () => { void this.updateActivity(ownedRun.id, 'streaming').catch(() => undefined); },
         tools: consult ? [] : [...this.createTools(ownedRun), ...(view ? this.createConversationTools(ownedRun, view) : []),
-          ...(!agent.ctx.tools.get('skill', agent) ? [this.createSkillTool(ownedRun)] : [])],
+          this.createSkillTool(ownedRun)],
         beforeStep: async proposed => {
           controller.signal.throwIfAborted();
           if (this.requireRun(ownedRun.id).status !== 'running') throw new Error('本轮工作已结束');
@@ -797,7 +804,7 @@ export class WorkforceRuntime {
       const injectedKnowledgeMemories = managedKnowledge ? this.store.listMemories(run.projectId, run.employeeId).filter(memory => knowledgeEmployee!.modules.knowledge[memory.scope === 'project' ? 'projectMemory' : 'employeeMemory']) : [];
       prompt += '\n\n每项工作通过工具读取或提交真实成果，不能虚构操作、同事或执行结果。引用保留 library、条目 ID、版本和原文行号；部分行还必须保留列号。区分“当前上下文缺资料，需要继续检索”和“资料已读，但结论仍需新的实验或人工验证”。完成后给出交付摘要，任务将进入待验收。';
       await this.store.updateRun(run.id, { status: 'running', startedAt: new Date().toISOString() });
-      live.handle = await this.ctx.agents.create({ sessionId, meta: { cwd: project.rootPath, ...(nativeContext.presetId ? { agentPreset: nativeContext.presetId } : {}), ...(run.parentRunId ? { parentSession: SessionId(this.requireRun(run.parentRunId).sessionId!), origin: 'subagent' as const, delegationDepth: this.ancestors(run).length } : {}) }, agentOptions: { provider: selection.provider, model: selection.model, maxTokens: outputReserve }, signal: live.controller.signal,
+      live.handle = await this.ctx.agents.create({ sessionId, meta: { cwd: project.rootPath, ...(nativeContext.presetId ? { agentPreset: nativeContext.presetId } : {}), ...(run.parentRunId ? { parentSession: SessionId(this.requireRun(run.parentRunId).sessionId!), origin: 'subagent' as const, delegationDepth: this.ancestors(run).length } : {}) }, agentOptions: { ...selection, maxTokens: outputReserve }, signal: live.controller.signal,
         setup: async (agentCtx, agent) => {
           const contextEvents: SessionEvent[] = [];
           agentCtx.on('session/event', (session, event) => { if (session.id === sessionId) contextEvents.push(event); });
@@ -815,7 +822,7 @@ export class WorkforceRuntime {
           // native handoff; no plugin data becomes a permanent native role.
           agentCtx.systemPrompt.context({ name: 'composable-workforce:task-context', order: 660, text: taskContext, required: true, interpolate: false });
           // Native runtime context includes the current sandbox, approval and skill catalogue.
-          installModelSelection(agentCtx, { current: selection, assembled: undefined });
+          installModelSelection(agentCtx);
           for (const tool of this.createTools(run)) agentCtx.tools.register(tool);
           if (!agentCtx.tools.get('skill', agent)) {
             agentCtx.tools.register(this.createSkillTool(run));
@@ -901,7 +908,7 @@ export class WorkforceRuntime {
 
   private projectRoot(run: WorkforceRun): string { return this.store.snapshot().projects.find(project => project.id === run.projectId)!.rootPath; }
 
-  private createSkillTool(run: WorkforceRun): ToolDefinition {
+  private createSkillTool(owner: WorkforceRun | (() => WorkforceRun)): ToolDefinition {
     const schema = objectSchema({ name: str });
     return {
       name: 'skill', description: '按任务需要载入原生目录中允许模型调用的 Skill。岗位偏好不限制其他 Skill，也不授予额外权限。', parameters: schema as ToolDefinition['parameters'],
@@ -910,6 +917,7 @@ export class WorkforceRuntime {
         const errors = validateJsonSchemaValue(schema, args);
         if (errors.length) throw new Error(errors.join('; '));
         const id = (args as { name: string }).name;
+        const run = typeof owner === 'function' ? owner() : owner;
         this.authorities(run);
         return resolveEmployeeSkill(this.ctx, this.skills, id, this.projectRoot(run), exec.signal, exec.agent);
       },
@@ -997,39 +1005,48 @@ export class WorkforceRuntime {
     } finally { await handle.close(); }
   }
 
-  private createConversationTools(run: WorkforceRun, view: ConversationWorkflowView): ToolDefinition[] {
+  /** Stable schemas registered before native step admission; only an active lease supplies execution. */
+  conversationToolDefinitions(): ToolDefinition[] {
+    const unbound = (): never => { throw new Error('业务工具尚未获得本轮授权'); };
+    return [...this.createTools(unbound), ...this.createConversationTools(unbound, unbound), this.createSkillTool(unbound)];
+  }
+
+  private createConversationTools(owner: WorkforceRun | (() => WorkforceRun), workflow: ConversationWorkflowView | (() => ConversationWorkflowView)): ToolDefinition[] {
     const tool = (name: string, description: string, properties: Record<string, JsonSchemaNode>, required: string[],
-      execute: (args: Record<string, unknown>, execution: ToolRunContext) => Promise<unknown>): ToolDefinition => {
+      execute: (args: Record<string, unknown>, execution: ToolRunContext, run: WorkforceRun) => Promise<unknown>): ToolDefinition => {
       const schema = objectSchema(properties, required);
       return { name, description, parameters: schema as ToolDefinition['parameters'],
         output: { schema: {}, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
         execute: async (args, execution) => {
+          const run = typeof owner === 'function' ? owner() : owner;
           this.assertTool(run, name); execution.signal.throwIfAborted();
           const errors = validateJsonSchemaValue(schema, args); if (errors.length) throw new Error(errors.join('; '));
-          return execute(args as Record<string, unknown>, execution);
+          return execute(args as Record<string, unknown>, execution, run);
         } };
     };
     const strings: JsonSchemaNode = { type: 'array', items: str };
     // WorkService remains the real validator and persistence owner. Plans made by
     // a model enter as drafts in the same atomic write, so an already-running
     // WorkEngine cannot dispatch them before the user chooses to start a task.
-    const planning = new WorkService({
-      snapshot: () => this.store.snapshot(), subscribe: listener => this.store.subscribe(listener),
-      transaction: (operation, options, replay) => this.store.transaction(state => {
-        const previousIds = new Set(state.workState?.tasks.map(task => task.id));
-        const result = operation(state);
-        for (const task of state.workState?.tasks ?? []) if (!previousIds.has(task.id)) {
-          task.status = 'draft';
-          task.sourceWorkflow = { projectTeamId: view.projectTeamId!, workflowId: view.workflowId!, stepId: view.currentStepId! };
-        }
-        return result;
-      }, options, replay),
-    });
+
     return [
       tool('worker_plan_task', '将当前步骤的一项任务保存为规划草稿，在工作流详情的已规划任务中查看；不启动执行或自动调度。负责人只能是自己或当前可委派下级。',
         { title: str, description: str, employeeId: str, deliverables: strings, acceptanceCriteria: strings,
           inputs: { type: 'array', items: str }, dependencyTaskIds: { type: 'array', items: str } },
-        ['title', 'description', 'employeeId', 'deliverables', 'acceptanceCriteria'], async args => {
+        ['title', 'description', 'employeeId', 'deliverables', 'acceptanceCriteria'], async (args, _execution, run) => {
+          const view = typeof workflow === 'function' ? workflow() : workflow;
+          const planning = new WorkService({
+            snapshot: () => this.store.snapshot(), subscribe: listener => this.store.subscribe(listener),
+            transaction: (operation, options, replay) => this.store.transaction(state => {
+              const previousIds = new Set(state.workState?.tasks.map(task => task.id));
+              const result = operation(state);
+              for (const task of state.workState?.tasks ?? []) if (!previousIds.has(task.id)) {
+                task.status = 'draft';
+                task.sourceWorkflow = { projectTeamId: view.projectTeamId!, workflowId: view.workflowId!, stepId: view.currentStepId! };
+              }
+              return result;
+            }, options, replay),
+          });
           if (['deliverables', 'acceptanceCriteria'].some(key => !(args[key] as string[]).length || (args[key] as string[]).length > 30)) throw new Error('任务交付内容与验收标准各需 1–30 项');
           const target = this.store.snapshot().employees.find(employee => employee.id === args.employeeId && employee.projectId === run.projectId && employee.status === 'active');
           if (!target || (target.id !== run.employeeId && !this.delegationTargetAllowed(run, target))) throw new Error('只能为自己或当前激活的下级规划任务');
@@ -1041,7 +1058,7 @@ export class WorkforceRuntime {
           return task;
         }),
       tool('worker_deliver', '提交本轮可供用户验收的真实文字或已存在的项目文件。提交不会自行验收或推进流程。',
-        { title: str, content: str, path: str }, ['title'], async args => {
+        { title: str, content: str, path: str }, ['title'], async (args, _execution, run) => {
           if (typeof args.title !== 'string' || !args.title.trim() || args.title.length > 300) throw new Error('交付标题必须为 1–300 个字符');
           if (args.content === undefined && args.path === undefined) throw new Error('请提供交付正文或实际项目文件路径');
           if (args.content !== undefined && (typeof args.content !== 'string' || !args.content.trim() || args.content.length > 100_000)) throw new Error('交付正文必须为 1–100000 个字符');
@@ -1060,7 +1077,7 @@ export class WorkforceRuntime {
           return artifact;
         }),
       tool('worker_consult', '仅在特别必要时向其他流程负责人咨询一个具体问题，必须说明必要原因；不执行其他流程或扩大激活人员范围。',
-        { employeeId: str, request: str, reason: str }, ['employeeId', 'request', 'reason'], (args, execution) =>
+        { employeeId: str, request: str, reason: str }, ['employeeId', 'request', 'reason'], (args, execution, run) =>
           this.delegate(run, args.employeeId as string, args.request as string, execution, args.reason as string)),
     ];
   }
@@ -1114,11 +1131,11 @@ export class WorkforceRuntime {
     } finally { execution.signal.removeEventListener('abort', abort); }
   }
 
-  private createTools(run: WorkforceRun): ToolDefinition[] {
-    const tool = (name: string, description: string, properties: Record<string, JsonSchemaNode>, execute: (args: Record<string, string>, exec: ToolRunContext) => Promise<unknown>, required?: string[]): ToolDefinition => {
+  private createTools(owner: WorkforceRun | (() => WorkforceRun)): ToolDefinition[] {
+    const tool = (name: string, description: string, properties: Record<string, JsonSchemaNode>, execute: (args: Record<string, string>, exec: ToolRunContext, run: WorkforceRun) => Promise<unknown>, required?: string[]): ToolDefinition => {
       const schema = objectSchema(properties, required);
       return { name, description, parameters: schema as ToolDefinition['parameters'], output: { schema: {}, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
-        execute: async (args, exec) => { this.assertTool(run, name); exec.signal.throwIfAborted(); const errors = validateJsonSchemaValue(schema, args); if (errors.length) throw new Error(errors.join('; ')); return execute(args as Record<string, string>, exec); },
+        execute: async (args, exec) => { const run = typeof owner === 'function' ? owner() : owner; this.assertTool(run, name); exec.signal.throwIfAborted(); const errors = validateJsonSchemaValue(schema, args); if (errors.length) throw new Error(errors.join('; ')); return execute(args as Record<string, string>, exec, run); },
         presentCall: () => ({ card: 'generic', title: description }) };
     };
     const tools = [
@@ -1130,7 +1147,7 @@ export class WorkforceRuntime {
           layer: { type: 'string', enum: ['A', 'B'] }, id: str, library: { type: 'string', enum: ['team', 'employee'] }, version: { type: 'integer' },
           startLine: { type: 'integer' }, endLine: { type: 'integer' }, startColumn: { type: 'integer' }, endColumn: { type: 'integer' }, query: str,
         }, required: ['layer', 'id', 'library', 'version', 'startLine'], additionalProperties: false },
-      }, async args => {
+      }, async (args, _exec, run) => {
         const authorities = this.assertTool(run, 'worker_memory_search');
         this.markMemoryUsed(run);
         const limits = this.live.get(run.id)!.knowledgeLimits ?? this.knowledgeLimits();
@@ -1187,13 +1204,13 @@ export class WorkforceRuntime {
         ];
         return createContextPacket(documents.length ? documents : [{ layer: 'B', id: 'empty-search', library: 'team', version: 1, title: '无匹配结果', content: '当前授权知识中未找到匹配项；可调整 query，不能猜测资料内容。' }], { query, maxTokens: limits.bRead, navigationOnly: true });
       }, []),
-      tool('worker_memory_write', '从本项目已验收交付物写入可追溯记忆', { title: str, content: str, sourceRunId: str, artifactId: str, scope: { type: 'string', enum: ['project', 'employee'] } }, async args => {
+      tool('worker_memory_write', '从本项目已验收交付物写入可追溯记忆', { title: str, content: str, sourceRunId: str, artifactId: str, scope: { type: 'string', enum: ['project', 'employee'] } }, async (args, _exec, run) => {
         const scope = args.scope as 'project' | 'employee';
         if (!this.authorities(run).every(employee => employee.modules.knowledge[scope === 'project' ? 'projectMemory' : 'employeeMemory'])) throw new Error('当前记忆范围未启用');
         return this.store.saveMemory({ projectId: run.projectId, ...(scope === 'employee' ? { employeeId: run.employeeId } : {}), scope, title: args.title!, content: args.content!, source: { kind: 'accepted-artifact', runId: args.sourceRunId!, artifactId: args.artifactId! } });
       }),
-      tool('worker_delegate', '将工作委派给本项目授权的员工实例', { employeeId: str, request: str }, (args, exec) => this.delegate(run, args.employeeId!, args.request!, exec)),
+      tool('worker_delegate', '将工作委派给本项目授权的员工实例', { employeeId: str, request: str }, (args, exec, run) => this.delegate(run, args.employeeId!, args.request!, exec)),
     ];
-    return tools.filter(tool => { try { this.assertTool(run, tool.name); return true; } catch { return false; } });
+    return typeof owner === 'function' ? tools : tools.filter(tool => { try { this.assertTool(owner, tool.name); return true; } catch { return false; } });
   }
 }

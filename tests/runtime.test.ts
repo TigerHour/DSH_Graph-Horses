@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -68,7 +69,7 @@ async function fixture(adapter: ScriptedAdapter, config: ConstructorParameters<t
   await ctx.plugin(SessionStore);
   await ctx.plugin(SessionProjectionRegistry);
   await ctx.plugin(SystemPrompt);
-  await ctx.plugin(ToolRuntime);
+  await ctx.plugin(ToolRuntime); await ctx.plugin(NativeToolExecutor);
   await ctx.plugin(AgentRegistry);
   await ctx.plugin(AgentLoop, { agents: [] });
   ctx.llm.registerAdapter(['fixture'], adapter);

@@ -1,3 +1,5 @@
+import AgentRegistry from '@deepseek-ai/dsh-agent';
+import SessionStore from '@deepseek-ai/dsh-session';
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 import { Context } from '@deepseek-ai/cordis';
@@ -150,7 +152,7 @@ test('real official Loader and preset trees keep default and other preset MCP de
   ctx.baseUrl = new URL('../', import.meta.url).href;
   await ctx.plugin(Loader);
   await ctx.loader.root.update([{ id: 'host', name: '@deepseek-ai/dsh-mcp-client', disabled: true, config: { serverName: 'host' } }]);
-  await ctx.plugin(SessionProjectionRegistry);
+  await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry);
   await ctx.plugin(AgentPresets, { default: 'default' });
   const unregisterDefault = await ctx.agentPresets.register({ id: 'default', plugins: [
     { id: 'default-docs', name: '@deepseek-ai/dsh-mcp-client', disabled: true, config: { serverName: 'default__docs' } },

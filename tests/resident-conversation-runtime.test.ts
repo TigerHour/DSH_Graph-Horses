@@ -1,3 +1,5 @@
+import { resolveTemporaryEmployeeModel } from '../src/harness/host.js';
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native';
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 import { createHash } from 'node:crypto';
@@ -67,7 +69,7 @@ async function fixture(t: TestContext) {
     ingestFor: async () => { counters.knowledgeIngest++; }, searchFor: async () => [], readFor: async () => undefined,
   };
   const ctx = new Context(), adapter = new OfflineAdapter();
-  for (const plugin of [LlmRuntime, SessionStore, SessionProjectionRegistry, SystemPrompt, ToolRuntime, FileSystem, WorkingDirectory, SkillRegistry, AgentRegistry]) await ctx.plugin(plugin);
+  for (const plugin of [LlmRuntime, SessionStore, SessionProjectionRegistry, SystemPrompt, ToolRuntime, NativeToolExecutor, FileSystem, WorkingDirectory, SkillRegistry, AgentRegistry]) await ctx.plugin(plugin);
   await ctx.plugin(AgentLoop, { agents: [] }); await ctx.plugin(FileTools); await ctx.plugin(SkillTool);
   ctx.llm.registerAdapter(['resident-fixture'], adapter);
   ctx.systemPrompt.section({ name: 'resident-native-system', order: -1000, text: 'NATIVE_SYSTEM_IDENTITY_SENTINEL' });
@@ -87,15 +89,24 @@ async function fixture(t: TestContext) {
   let eventReads = 0;
   const dispose = registerConversationWorkflowRuntime(ctx, {
     isDeliverySession: () => false,
-    prepare: async (agent, key, request, signal) => {
+    tools: runtime.conversationToolDefinitions(),
+    selectModel: (agent, turnKey) => {
+      const temporary = temporaryTargets.get(agent.id);
+      const resident = resolveConversationEmployee(store.snapshot(), project.id, agent.id);
+      const configured = temporary ? resolveTemporaryEmployeeModel(store.snapshot(), { ...temporary, projectId: project.id, sessionId: agent.id, turnKey }) : resident.employee?.modules.model;
+      if (!configured) return undefined;
+      return { model: { provider: configured.provider!, model: configured.model!, ...(configured.reasoningEffort ? { reasoningEffort: ReasoningEffortId(configured.reasoningEffort) } : {}) },
+        ...(!temporary && resident.conversationEmployee?.mode === 'consult' ? { toolPolicy: 'consult' as const } : {}) };
+    },
+    prepare: async (agent, key, request, signal, context) => {
       const temporary = temporaryTargets.get(agent.id);
       if (temporary) {
         temporaryTargets.delete(agent.id);
         const view = await store.admitTemporaryConversationEmployee({ projectId: project.id, sessionId: agent.id, turnKey: key, ...temporary });
-        return runtime.openEmployeeConversationTurn(agent, key, request, view, signal);
+        return runtime.openEmployeeConversationTurn(agent, key, request, view, signal, context?.modelSelection);
       }
       const view = resolveConversationEmployee(store.snapshot(), project.id, agent.id);
-      return view.conversationEmployee ? runtime.openEmployeeConversationTurn(agent, key, request, view, signal) : Promise.resolve(undefined);
+      return view.conversationEmployee ? runtime.openEmployeeConversationTurn(agent, key, request, view, signal, context?.modelSelection) : Promise.resolve(undefined);
     },
     readEvents: async agent => { eventReads++; return agent.session.snapshotEvents(); },
     onError: error => errors.push(error),
@@ -104,7 +115,7 @@ async function fixture(t: TestContext) {
   const createNative = async (name: string) => {
     const handle = await ctx.agents.create({ sessionId: SessionId(name), meta: { cwd: projectRoot },
       agentOptions: { provider: 'resident-fixture', model: 'native-user-selected', reasoningEffort: ReasoningEffortId('high') },
-      setup: agentCtx => { installModelSelection(agentCtx, { current: { provider: 'resident-fixture', model: 'native-user-selected', reasoningEffort: ReasoningEffortId('high') }, assembled: undefined }); },
+      setup: agentCtx => { installModelSelection(agentCtx); },
     }); handles.push(handle); attached.push(handle.agent.id); return handle.agent;
   };
   const native = await createNative('resident-same-native-session');
@@ -131,12 +142,12 @@ async function fixture(t: TestContext) {
     assert.match(visible(request), /NATIVE_SYSTEM_IDENTITY_SENTINEL/); assert.match(visible(request), /NATIVE_REQUIRED_POLICY_SENTINEL/);
     return request;
   };
-  const invokeTemporary = async (templateId: string, message: string, agent = native) => {
+  const reserveTemporary = (templateId: string, agent = native) => {
     temporaryTargets.set(agent.id, { templateId, expectedTargetVersion: store.snapshot().templates.find(template => template.id === templateId)!.version });
-    return send(message, agent);
   };
+  const invokeTemporary = async (templateId: string, message: string, agent = native) => { reserveTemporary(templateId, agent); return send(message, agent); };
   t.after(async () => { await dispose(); await runtime.dispose(); for (const handle of handles) await handle.dispose(); await ctx.fiber.dispose(); await rm(directory, { recursive: true, force: true }); });
-  return { store, project, ctx, adapter, runtime, native, createNative, set, clear, send, invokeTemporary, counters, errors, streams, directory, eventReads: () => eventReads };
+  return { store, project, ctx, adapter, runtime, native, createNative, set, clear, send, invokeTemporary, reserveTemporary, counters, errors, streams, directory, eventReads: () => eventReads };
 }
 
 test('explicit resident consult and execute keep native history/stream, restore tools, switch employee, and unbind locally', async t => {
@@ -295,4 +306,23 @@ test('a temporary employee streaming in one native conversation cannot expose it
   } finally { complete(); await sending; }
   assert.equal(f.ctx.agents.list().length, 2);
   assert.deepEqual(f.errors, []);
+});
+
+
+test('a drafted template mention reuses a later customized standalone instance and selects that instance model before native preparation', async t => {
+  const f = await fixture(t);
+  const templateId = 'employee-template-product';
+  f.reserveTemporary(templateId);
+  const other = await f.createNative('other-chat-creates-instance-after-draft');
+  await f.set(templateId, 'execute', other);
+  const existing = resolveConversationEmployee(f.store.snapshot(), f.project.id, other.id).employee!;
+  await f.store.updateEmployee(existing.id, { modules: { ...existing.modules, model: { mode: 'override', provider: 'resident-fixture', model: 'custom-instance-model', reasoningEffort: 'high' } } });
+  const request = await f.send('send the still-valid drafted template reference');
+  assert.equal(request.model, 'custom-instance-model');
+  assert.equal(request.reasoningEffort, ReasoningEffortId('high'));
+  assert.equal(f.store.snapshot().employees.filter(employee => employee.projectId === f.project.id && employee.templateId === templateId && !employee.teamInstanceId).length, 1);
+  const run = f.store.snapshot().runs.find(run => run.sessionId === f.native.id)!;
+  assert.equal(run.employeeSnapshot.modules.model.model, 'custom-instance-model');
+  assert.equal(run.employeeId, existing.id);
+  assert.equal(resolveConversationEmployee(f.store.snapshot(), f.project.id, f.native.id).conversationEmployee, null);
 });

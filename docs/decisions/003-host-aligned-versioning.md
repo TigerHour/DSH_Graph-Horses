@@ -4,16 +4,16 @@
 
 ## 决策
 
-插件公开包版本取已实际验收的官方DSH版本的`major.minor.patch`，不带预发布或构建后缀。当前插件由`0.30.0`切换为`0.2.1`；对应官方宿主仍为`0.2.1-rc.3`。功能为原0.30.0已验收基线，不回退代码、不重置或迁移用户数据。数字变小是编号规则切换。
+插件公开包版本取已实际验收的官方DSH版本的`major.minor.patch`，不带预发布或构建后缀。2026-10-26 曾将插件由`0.30.0`切换为`0.2.1`，对应官方宿主`0.2.1-rc.3`；这是编号规则切换，没有回退代码或重置用户数据。2026-11-07 本次版本为插件`0.2.2`与官方宿主`0.2.2-rc.1`；交付验收绑定[本次归档哈希](../../integration/verification-0.2.2.md)。
 
 | 项目 | 当前值 | 规则 |
 | --- | --- | --- |
-| 插件包及lockfile根version | `0.2.1` | 取已验收DSH的主、次、补丁号 |
-| `engines.dsh` | `0.2.1-rc.3` | 保留实际验收的完整宿主版本 |
-| 官方基线与全部DSH runtime peer | `0.2.1-rc.3` | 精确匹配实际宿主，不放宽为任意0.2.1发行版 |
+| 插件包及lockfile根version | `0.2.2` | 取已验收DSH的主、次、补丁号 |
+| `engines.dsh` | `0.2.2-rc.1` | 保留实际验收的完整宿主版本 |
+| 官方基线与全部DSH runtime peer | `0.2.2-rc.1` | 精确匹配实际宿主，不放宽为任意0.2.2发行版 |
 | Cordis等非DSH依赖 | 各自真实版本 | 不伪装成DSH版本 |
 
-例如未来实际验收DSH`0.2.2-rc.1`后，插件版本为`0.2.2`，兼容声明仍精确为`0.2.2-rc.1`。插件数字版本不表示DSH已稳定，也不消除本项目的验收保留项。
+本次DSH`0.2.2-rc.1`对应插件版本`0.2.2`，兼容声明仍精确为`0.2.2-rc.1`。插件数字版本不表示DSH已稳定，也不消除本项目的验收保留项。
 
 ## 可执行约束
 
@@ -38,6 +38,6 @@
 
 ## English
 
-The plugin version uses only major.minor.patch from the officially verified DSH version. Plugin 0.2.1 currently targets exactly DSH 0.2.1-rc.3. Runtime peers and engine declarations retain the complete verified host version; omitting the plugin suffix does not broaden compatibility or imply a stable host release.
+The plugin version uses only major.minor.patch from the officially verified DSH version. The current migration targets plugin 0.2.2 with exactly DSH 0.2.2-rc.1; publication requires acceptance bound to the new archive hash. Historical plugin 0.2.1 remains tied to DSH 0.2.1-rc.3. Runtime peers and engine declarations retain the complete verified host version; omitting the plugin suffix does not broaden compatibility or imply a stable host release.
 
 Build/prepack guards check the core plugin version, full host declarations and root-lock metadata. Same-core builds use immutable GitHub tags, commits and checksums with distinct installation sources. Historical releases remain unchanged. This renumbers the existing 0.30.0 feature baseline; future host builds still require fresh official archive verification.

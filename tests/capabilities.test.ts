@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native';
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -70,7 +71,7 @@ async function fixture(t: TestContext, steps: ConstructorParameters<typeof Scrip
   ctx.baseUrl = new URL('../', import.meta.url).href;
   if (presets) await ctx.plugin(Loader);
   await ctx.plugin(LlmRuntime); await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry);
-  await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime);
+  await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(NativeToolExecutor);
   if (nativePolicy) {
     await ctx.plugin(SandboxPolicy, { mode: 'workspace-write', workspaceRoot: projectRoot });
     await ctx.plugin(SandboxedFileSystem);

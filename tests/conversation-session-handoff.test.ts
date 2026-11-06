@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -44,7 +45,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, scripts: Con
   employee = await store.updateEmployee(employee.id, { modules });
   const ctx = new Context();
   await ctx.plugin(LlmRuntime); await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry);
-  await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(AgentRegistry);
+  await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(NativeToolExecutor); await ctx.plugin(AgentRegistry);
   if (durable) await ctx.plugin(JsonlSessionPersistence, { root: join(root, 'sessions'), compression: 'none' });
   await ctx.plugin(AgentLoop, { agents: [] });
   ctx.systemPrompt.section({ name: 'native-complete', order: 0, complete: true, text: 'NATIVE_HANDOFF_SYSTEM' });
@@ -66,11 +67,12 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, scripts: Con
     const existing = ctx.agents.get(id);
     if (existing) return bareAgent ? existing : { agent: existing };
     const handle = await ctx.agents.resume({ resumeSessionId: id, agentOptions: { provider: 'fixture', model: 'native' },
-      setup: agentCtx => { installModelSelection(agentCtx, { current: { provider: 'fixture', model: 'native' }, assembled: undefined }); },
+      setup: agentCtx => { installModelSelection(agentCtx); },
     });
     nativeHandles.push(handle);
     return bareAgent ? handle.agent : { agent: handle.agent };
   } } as never);
+  ctx.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'fixture', model: 'native' }) } as never);
   const runtime = new WorkforceRuntime(ctx, store, new Map());
   const start = async () => {
     const run = await runtime.start({ projectId: project.id, employeeId: employee.id, request: 'HISTORICAL_USER_REQUEST' });

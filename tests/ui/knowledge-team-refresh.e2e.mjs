@@ -14,7 +14,7 @@ import { prepareOfficialPluginRuntime } from './official-plugin-runtime.mjs';
 import { installEmployeeSettingsFixture } from './employee-settings-offline.fixture.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-process.env.DSH_INSTALLATION_MANIFEST ||= resolve(root, '.local/official-0.2.1-rc.3/node_modules/@deepseek-ai/dsh/package.json');
+process.env.DSH_INSTALLATION_MANIFEST ||= resolve(root, '.local/official-0.2.2-rc.1/node_modules/@deepseek-ai/dsh/package.json');
 const installation = await resolveCliInstallation(root);
 const temp = await mkdtemp(resolve(tmpdir(), 'workforce-knowledge-team-refresh-'));
 const home = resolve(temp, 'home'), profile = resolve(home, 'profiles/web'), statePath = resolve(temp, 'state.json');

@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -66,7 +67,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, scripts: Con
   ] });
   const ctx = new Context();
   await ctx.plugin(LlmRuntime); await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry);
-  await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(AgentRegistry); await ctx.plugin(AgentLoop, { agents: [] });
+  await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(NativeToolExecutor); await ctx.plugin(AgentRegistry); await ctx.plugin(AgentLoop, { agents: [] });
   await ctx.plugin(FileSystem); await ctx.plugin(WorkingDirectory); await ctx.plugin(FileTools);
   const adapter = new ScriptedAdapter(scripts); ctx.llm.registerAdapter(['fixture'], adapter);
   ctx.systemPrompt.section({ name: 'native-identity', order: 0, text: 'NATIVE_COMPLETE_SYSTEM', complete: true });
@@ -78,7 +79,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, scripts: Con
   const createNative = async () => {
     const handle = await ctx.agents.create({ sessionId: SessionId(`native-conversation-${Math.random()}`), meta: { cwd: root },
       agentOptions: { provider: 'fixture', model: 'native-default' },
-      setup: agentCtx => { installModelSelection(agentCtx, { current: { provider: 'fixture', model: 'native-default' }, assembled: undefined }); },
+      setup: agentCtx => { installModelSelection(agentCtx); },
     }); nativeHandles.push(handle); attached.push(handle.agent.id); return handle.agent;
   };
   const native = await createNative();
@@ -88,11 +89,18 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, scripts: Con
   await store.selectConversationWorkflowStep({ projectId: project.id, sessionId: native.id, stepId: 'architecture', instanceVersion: initial.instanceVersion! }, { expectedRevision: store.snapshot().revision });
   const errors: unknown[] = [];
   const dispose = registerConversationWorkflowRuntime(ctx, {
+    tools: runtime.conversationToolDefinitions(),
+    selectModel: agent => {
+      const view = resolveConversationWorkflow(store.snapshot(), project.id, agent.id);
+      if (!view.instanceId || !view.owner) return undefined;
+      const configured = view.owner.modules.model;
+      return { model: { provider: configured.provider!, model: configured.model! } };
+    },
     isDeliverySession: sessionId => runtime.ownsSession(sessionId) || store.snapshot().runs.some(run => run.sessionId === sessionId && (run.parentRunId || !run.conversationWorkflow)),
-    prepare: async (agent, key, request, signal) => {
+    prepare: async (agent, key, request, signal, context) => {
       const view = resolveConversationWorkflow(store.snapshot(), project.id, agent.id);
       if (!view.instanceId) return undefined;
-      return runtime.openConversationTurn(agent, key, request, view, signal);
+      return runtime.openConversationTurn(agent, key, request, view, signal, context?.modelSelection);
     }, onError: error => errors.push(error),
   });
   const view = () => resolveConversationWorkflow(store.snapshot(), project.id, native.id);

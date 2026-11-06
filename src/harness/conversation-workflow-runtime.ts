@@ -2,8 +2,8 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent';
 import { boundContextSummary, createUserMessage, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
-import type {} from '@deepseek-ai/dsh-api-session-controller';
-import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt';
+import type {} from '@deepseek-ai/dsh-session-query';
+import type { PromptAssembly, PromptPresentation } from '@deepseek-ai/dsh-system-prompt';
 import type { ToolDefinition, ToolDispatchExecution, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools';
 import { hasTemporaryEmployeeMentionMarker, stripTemporaryEmployeeMentionMarker } from '../domain/conversation-employee.js';
 import { pendingWorkflowTask, retainedWorkflowRole, retireWorkflowContexts, workflowContextDefinition, WORKFLOW_ROLE_CONTEXT, type WorkflowContextDefinition } from './native-workflow-context.js';
@@ -42,7 +42,11 @@ export interface NativeConversationStep {
 
 export interface ConversationWorkflowRuntimeDependencies {
   /** Undefined means the native conversation continues without an employee owner. */
-  prepare(agent: Agent, turnKey: string, requestText: string, signal?: AbortSignal, context?: { userMessages: readonly UserMessage[] }): Promise<NativeWorkflowLease | undefined>;
+  prepare(agent: Agent, turnKey: string, requestText: string, signal?: AbortSignal, context?: { userMessages: readonly UserMessage[]; modelSelection?: Readonly<ModelSelection> }): Promise<NativeWorkflowLease | undefined>;
+  /** Read synchronously before native step preparation captures its route. */
+  selectModel?: (agent: Agent, turnKey: string, requestText: string) => { model: ModelSelection; toolPolicy?: 'consult' } | undefined;
+  /** Stable public contracts; their conditional registrations delegate only to the active lease. */
+  tools?: readonly ToolDefinition[];
   /** Generated delivery records retain their own runtime and must never be adopted. */
   isDeliverySession(sessionId: string): boolean;
   /** Synchronous read-only classification allows unload to cancel real pending owners promptly. */
@@ -64,7 +68,6 @@ interface TurnState {
   preparing?: Promise<void>;
   lease?: NativeWorkflowLease;
   toolDisposers: Array<() => void>;
-  refreshed: boolean;
   reassembling: boolean;
   ended: boolean;
   settling?: Promise<void>;
@@ -73,6 +76,11 @@ interface TurnState {
   pendingOwnerChange?: boolean;
   roleDefinition?: WorkflowContextDefinition;
   taskDefinition?: WorkflowContextDefinition;
+  selection?: Readonly<ModelSelection>;
+  nativeSelection?: Readonly<ModelSelection>;
+  toolPolicy?: 'consult';
+  selectionError?: unknown;
+  selected: boolean;
 }
 
 interface AgentState { current?: TurnState; settlement: Promise<void> }
@@ -99,21 +107,30 @@ function modelNotice(agent: Agent, model: ModelSelection): UserMessage | undefin
  * No prompt is resubmitted, no Session is created, and native presets, attachments,
  * history, sandbox and approval policies stay owned by Harness.
  *
- * Harness assembles before agent/pre-step. The first asynchronous assembly
- * prepares a lease once, registers its scoped tools, then makes one guarded
- * public reassembly so native/PTC tool schemas and required context are current
- * on the very first request. Later assemblies reuse that turn's frozen lease.
+ * The native loop captures its model after claiming input, then resolves
+ * conditional tools before prompt assembly. Select synchronously at that claim;
+ * stable scoped tool registrations await one frozen lease in their conditions.
+ * A guarded public reassembly reads each step's authoritative executor schemas
+ * for budgeting without changing the executor-owned tool declarations.
  */
 export function registerConversationWorkflowRuntime(ctx: Context, deps: ConversationWorkflowRuntimeDependencies): () => Promise<void> {
   // Cordis may dispose sibling service providers concurrently with this
   // adapter. Keep the public handles needed to finish owned cleanup.
   const agentRegistry = ctx.agents;
-  const sessionController = ctx.get('sessionController');
+  const sessionQuery = ctx.get('sessionQuery');
   const agents = new Map<string, AgentState>();
   const hooks: Array<() => void> = [];
   const observed = new Map<string, { events: Map<number, SessionEvent>; primed: boolean; priming?: Promise<void> }>();
   let closed = false;
   let closing: Promise<void> | undefined;
+  let selectingModel = false;
+  const registeredTools = new Map<Agent, { definitions: Map<string, ToolDefinition>; disposers: Array<() => void> }>();
+  const sameModel = (left: Readonly<ModelSelection> | undefined, right: Readonly<ModelSelection> | undefined) =>
+    left?.provider === right?.provider && left?.model === right?.model && left?.reasoningEffort === right?.reasoningEffort;
+  const select = (agent: Agent, selection: Readonly<ModelSelection>) => {
+    selectingModel = true;
+    try { agent.model.select(selection); } finally { selectingModel = false; }
+  };
 
   const report = (error: unknown) => {
     try { if (deps.onError) deps.onError(error); else ctx.logger.error(error); }
@@ -128,7 +145,10 @@ export function registerConversationWorkflowRuntime(ctx: Context, deps: Conversa
     const value = observation(agent.id);
     if (value.priming) await value.priming;
     if (value.primed && !refresh) return;
-    const read = deps.readEvents ?? (sessionController ? async (target: Agent, abort?: AbortSignal) => (await sessionController.inspect(target.id, abort)).events : undefined);
+    const read = deps.readEvents ?? (sessionQuery ? async (target: Agent, abort?: AbortSignal) => {
+      const observed = await sessionQuery.observeSession(target.id, { signal: abort, projectionMode: 'none' });
+      try { return [...observed.events]; } finally { observed[Symbol.dispose](); }
+    } : undefined);
     // Service-less in-memory compositions observe only their own event feed.
     // The production plugin already requires the public Session controller.
     if (!read) { value.primed = true; return; }
@@ -171,6 +191,7 @@ export function registerConversationWorkflowRuntime(ctx: Context, deps: Conversa
     turn.settling = previous.then(async () => {
       // Teardown may start while prepare is still observing cancellation.
       await turn.preparing?.catch(() => undefined);
+      if (turn.selection && turn.nativeSelection && owner.current === turn) select(turn.agent, turn.nativeSelection);
       const lease = turn.lease;
       try { await lease?.finish?.(events); }
       finally {
@@ -190,9 +211,11 @@ export function registerConversationWorkflowRuntime(ctx: Context, deps: Conversa
     const owner = agentState(agent);
     if (owner.current?.startSeq === start.seq) return owner.current.ended ? undefined : owner.current;
     if (owner.current && !owner.current.ended) void settle(owner.current);
+    const previousNativeSelection = owner.current?.lease ? owner.current.nativeSelection : undefined;
     const turn: TurnState = {
+      nativeSelection: previousNativeSelection,
       agent, turn: start.data.turn, startSeq: start.seq, key: `${agent.id}:${start.seq}`,
-      incoming: [], prepared: false, toolDisposers: [], refreshed: false, reassembling: false, ended: false,
+      incoming: [], prepared: false, toolDisposers: [], reassembling: false, ended: false, selected: false,
     };
     owner.current = turn;
     return turn;
@@ -210,6 +233,7 @@ export function registerConversationWorkflowRuntime(ctx: Context, deps: Conversa
       turn.ownsPending = pendingMessages.some(message => message.source.kind === 'user' && deps.isTemporaryEmployeeRequest?.(turn.agent, userText([message])))
         || deps.ownsPendingTurn?.(turn.agent, userText(pendingMessages));
       await agentState(turn.agent).settlement;
+      if (turn.selectionError) throw turn.selectionError;
       signal?.throwIfAborted();
       await primeEvents(turn.agent, signal);
       signal?.throwIfAborted();
@@ -222,7 +246,7 @@ export function registerConversationWorkflowRuntime(ctx: Context, deps: Conversa
       const messages = turn.incoming.length ? turn.incoming : turn.agent.session.snapshotEvents()
         .filter(event => event.seq >= turn.startSeq && event.type === 'user/message')
         .map(event => event.data as UserMessage);
-      turn.lease = await deps.prepare(turn.agent, turn.key, userText(messages), signal, { userMessages: messages.filter(message => message.source.kind === 'user') });
+      turn.lease = await deps.prepare(turn.agent, turn.key, userText(messages), signal, { userMessages: messages.filter(message => message.source.kind === 'user'), modelSelection: turn.selection });
       // None is still the native sender even if uninstall raced an async
       // project lookup. It must reach the original sink without cancellation.
       if (!turn.lease && closed) {
@@ -232,67 +256,94 @@ export function registerConversationWorkflowRuntime(ctx: Context, deps: Conversa
       signal?.throwIfAborted();
       if (closed || turn.ended) throw new Error('工作流对话服务已关闭');
       const lease = turn.lease;
-      if (lease?.toolPolicy === 'consult') {
-        // Official per-Agent capability scope also tells the native skill hook
-        // to omit its catalog. Own-layer/PTC exemptions require a guard too.
-        turn.toolDisposers.push(turn.agent.ctx.tools.restrict({ allow: [] }));
-        turn.toolDisposers.push(turn.agent.ctx.tools.guard(() => '轻咨询不执行工具；请在常驻菜单切换到工具执行'));
-      }
+      if (lease && !turn.selection) throw new Error('岗位模型尚未在原生步骤准备前选定，请重新发送');
+      if (lease && turn.selection && !sameModel(lease.model, turn.selection)) throw new Error('岗位模型在本轮准备期间发生变化，请重新发送');
       turn.roleDefinition = lease && workflowContextDefinition(lease.prompt, lease.contextKey);
       turn.taskDefinition = lease?.taskContext ? workflowContextDefinition(lease.taskContext, turn.roleDefinition?.version) : undefined;
       retire(turn.agent, turn.roleDefinition, turn.taskDefinition);
-      if (lease && lease.toolPolicy !== 'consult') for (const definition of lease.tools ?? []) {
-        if (turn.agent.ctx.tools.get(definition.name, turn.agent)) throw new Error(`工作流工具与现有工具重名：${definition.name}`);
-        turn.toolDisposers.push(turn.agent.ctx.tools.register({
-          ...definition,
-          execute: (args, execution) => {
-            if (closed || turn.ended || active(execution.agent)?.lease !== lease) throw new Error('该步骤的工具授权已结束');
-            return definition.execute(args, execution);
-          },
-        }));
+      for (const definition of lease?.tools ?? []) {
+        const registered = registeredTools.get(turn.agent)?.definitions.get(definition.name);
+        if (!registered && definition.name === 'skill' && turn.agent.ctx.tools.get('skill', turn.agent)) continue;
+        if (!registered || turn.agent.ctx.tools.get(definition.name, turn.agent) !== registered) throw new Error(`工作流工具与现有工具重名或未声明：${definition.name}`);
       }
       turn.prepared = true;
     })();
     return turn.preparing;
   };
-  const withModel = (assembly: PromptAssembly, turn: TurnState): PromptAssembly => {
-    // PromptAssembly.tools is the documented authoritative schema surface.
-    // Do not mutate the immutable LLM request or the native model stream.
-    const result = turn.lease ? { ...assembly,
-      ...(turn.lease.toolPolicy === 'consult' ? { tools: [] } : {}),
-      variables: { ...assembly.variables, provider: turn.lease.model.provider, model: turn.lease.model.model } } : assembly;
-    turn.assembly = result;
-    return result;
+  const present = (presentation: PromptPresentation, turn: TurnState): PromptPresentation => turn.lease ? {
+    ...presentation, variables: { ...presentation.variables, provider: turn.lease.model.provider, model: turn.lease.model.model },
+  } : presentation;
+  const registerTools = (agent: Agent) => {
+    if (registeredTools.has(agent) || deps.isDeliverySession(agent.id)) return;
+    const owned = { definitions: new Map<string, ToolDefinition>(), disposers: [] as Array<() => void> };
+    registeredTools.set(agent, owned);
+    for (const contract of deps.tools ?? []) {
+      // A native skill implementation owns its name; no fallback is needed.
+      if (contract.name === 'skill' && agent.ctx.tools.get('skill', agent)) continue;
+      if (agent.ctx.tools.get(contract.name, agent)) continue;
+      const definition: ToolDefinition = { ...contract, execute: (args, execution) => {
+        const turn = active(execution.agent);
+        const actual = turn?.lease?.tools?.find(tool => tool.name === contract.name);
+        if (closed || !turn || !actual || turn.lease?.toolPolicy === 'consult') throw new Error('该步骤的工具授权已结束');
+        return actual.execute(args, execution);
+      } };
+      owned.disposers.push(agent.ctx.tools.register(definition, { when: async ({ agent: target, signal }) => {
+        const turn = turnFor(target);
+        if (!turn) return false;
+        await prepare(turn, signal);
+        return !closed && !turn.ended && turn.lease?.toolPolicy !== 'consult' && Boolean(turn.lease?.tools?.some(tool => tool.name === contract.name));
+      } }));
+      owned.definitions.set(contract.name, definition);
+    }
   };
+  try { for (const agent of agentRegistry.list()) registerTools(agent); } catch (error) { report(error); }
+  hooks.push(ctx.on('agent/created', ({ agent }) => { registerTools(agent); }));
 
   hooks.push(ctx.systemPrompt.context({ name: WORKFLOW_ROLE_CONTEXT, order: 650, required: true, interpolate: false,
     text: context => context.agent ? retainedWorkflowRole(context.agent.session, active(context.agent)?.roleDefinition) : '',
   }));
   hooks.push(ctx.on('agent/inbox/claimed', ({ agent, message, turn: number }) => {
+    registerTools(agent);
     const turn = turnFor(agent);
     if (turn && turn.turn === number) {
-      if (!turn.prepared) turn.incoming.push(message);
+      if (!turn.prepared) {
+        turn.incoming.push(message);
+        if (!turn.selected && message.source.kind === 'user') {
+          turn.selected = true;
+          try {
+            const selected = deps.selectModel?.(agent, turn.key, userText([message]));
+            if (selected) {
+              turn.nativeSelection ??= agent.model.current();
+              turn.selection = selected.model; turn.toolPolicy = selected.toolPolicy;
+              select(agent, selected.model);
+              if (selected.toolPolicy === 'consult') turn.toolDisposers.push(agent.ctx.tools.restrict({ allow: [] }));
+            } else if (turn.nativeSelection) select(agent, turn.nativeSelection);
+          } catch (error) { turn.selectionError = error; }
+        }
+      }
       else if (message.source.kind === 'user') {
         const text = userText([message]);
         if (hasTemporaryEmployeeMentionMarker(text) || deps.isTemporaryEmployeeRequest?.(agent, text)) turn.pendingOwnerChange = true;
       }
     }
   }));
-  hooks.push(ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+  hooks.push(ctx.on('system-prompt/assemble', async (_presentation, context, next) => {
     if (!context.agent) return next();
     const turn = turnFor(context.agent);
     if (!turn) return next();
-    if (turn.reassembling) return withModel(await next(), turn);
+    if (turn.reassembling) return present(await next(), turn);
     await prepare(turn, context.signal);
-    if (turn.lease && !turn.refreshed) {
+    if (turn.lease) {
       turn.reassembling = true;
       try {
+        // The official executor owns tools. Read the authoritative completed
+        // assembly with the same step-owned admission; transform only text.
         const assembly = await ctx.systemPrompt.assemble(context);
-        turn.refreshed = true;
-        return withModel(assembly, turn);
+        turn.assembly = assembly;
+        return present({ sections: assembly.sections, contexts: assembly.contexts, variables: assembly.variables }, turn);
       } finally { turn.reassembling = false; }
     }
-    return withModel(await next(), turn);
+    return present(await next(), turn);
   }, { prepend: true }));
   hooks.push(ctx.on('agent/pre-step', async (payload, next) => {
     const turn = active(payload.agent);
@@ -318,17 +369,14 @@ export function registerConversationWorkflowRuntime(ctx: Context, deps: Conversa
     }
     return { ...decision, messages };
   }, { prepend: true }));
+  // Existing budget hook is limited to controls; the step's selected route
+  // and reasoning effort remain byte-for-byte owned by Agent.model.
   hooks.push(ctx.on('agent/request', async ({ agent }, next) => {
-    const config = await next();
-    const lease = active(agent)?.lease;
-    if (!lease) return config;
-    const { reasoningEffort: _nativeEffort, ...native } = config;
-    return { ...native, provider: lease.model.provider, model: lease.model.model,
-      ...(lease.model.reasoningEffort === undefined ? {} : { reasoningEffort: lease.model.reasoningEffort }),
-      ...(lease.maxTokens === undefined ? {} : { maxTokens: Math.min(native.maxTokens ?? lease.maxTokens, lease.maxTokens) }),
-    };
+    const native = await next();
+    const cap = active(agent)?.lease?.maxTokens;
+    return cap === undefined ? native : { ...native, maxTokens: Math.min(native.maxTokens ?? cap, cap) };
   }, { prepend: true }));
-  hooks.push(ctx.tools.guard(execution => active(execution.agent)?.lease?.guard?.(execution)));
+  hooks.push(ctx.tools.guard(execution => active(execution.agent)?.lease?.toolPolicy === 'consult' ? '轻咨询不执行工具；请在常驻菜单切换到工具执行' : active(execution.agent)?.lease?.guard?.(execution)));
   hooks.push(ctx.on('tools/execute', async (execution, next) => {
     const lease = active(execution.agent)?.lease;
     const result = await next();
@@ -338,6 +386,11 @@ export function registerConversationWorkflowRuntime(ctx: Context, deps: Conversa
   hooks.push(ctx.on('session/event', (session, event) => {
     observation(session.id).events.set(event.seq, event);
     const turn = agents.get(session.id)?.current;
+    if (turn && turn.selection && event.type === 'model/selection' && !selectingModel) {
+      turn.nativeSelection = event.data;
+      // Session publication is observe-only and forbids reentrant append.
+      queueMicrotask(() => { if (!closed && !turn.ended && turn.selection) select(turn.agent, turn.selection); });
+    }
     if (turn && event.type === 'turn/end' && event.data.turn === turn.turn) void settle(turn);
   }));
   hooks.push(ctx.on('session/disposed', session => { observed.delete(session.id); }));
@@ -347,6 +400,9 @@ export function registerConversationWorkflowRuntime(ctx: Context, deps: Conversa
     catch (error) { report(error); }
   }));
   hooks.push(ctx.on('agent/disposed', ({ agent }) => {
+    const owned = registeredTools.get(agent);
+    for (const dispose of owned?.disposers ?? []) dispose();
+    registeredTools.delete(agent);
     const owner = agents.get(agent.id);
     if (owner?.current && !owner.current.ended) void settle(owner.current);
     void owner?.settlement.finally(() => { if (agents.get(agent.id) === owner) agents.delete(agent.id); });
@@ -377,6 +433,8 @@ export function registerConversationWorkflowRuntime(ctx: Context, deps: Conversa
       // replaced Agent merely because it was idle before that observation.
       if (agentRegistry.get(agent.id) === agent && agent.status === 'idle' && !deps.isDeliverySession(agent.id)) retire(agent);
     }
+    for (const owned of registeredTools.values()) for (const dispose of owned.disposers.reverse()) { try { dispose(); } catch (error) { report(error); } }
+    registeredTools.clear();
     observed.clear();
     agents.clear();
   })();

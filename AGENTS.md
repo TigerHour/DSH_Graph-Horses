@@ -33,7 +33,7 @@
 
 ## 5. 版本跟随 DSH 的主、次、补丁号
 
-- 插件 `package.json.version` 取已实际验收的官方 DSH 版本的 `major.minor.patch`，不带 `alpha` / `rc` 或构建后缀。当前插件为 `0.2.1`，兼容的实际官方宿主仍为 `0.2.1-rc.3`；不再独立递增 `0.30.x`。
+- 插件 `package.json.version` 取已实际验收的官方 DSH 版本的 `major.minor.patch`，不带 `alpha` / `rc` 或构建后缀。当前插件为 `0.2.2`，宿主兼容声明精确为 `0.2.2-rc.1`，运行时要求 Node `>=24.9.0`；交付仍须绑定本次归档验收。历史插件 `0.2.1` 仍对应 `0.2.1-rc.3`，不再独立递增 `0.30.x`。
 - `engines.dsh`、所有 `@deepseek-ai/dsh-*` runtime peer及官方基线继续精确保留实际验收的完整DSH版本，不能因插件去掉后缀而放宽兼容范围。lockfile根版本及随包根版本元数据快照同步维护；构建和打包必须通过 `npm run check:version`。
 - 更新 DSH 前先研究公开接口，完成兼容与归档验收，不能仅改版本号宣称兼容。同一DSH主次补丁号内的宿主/插件独立修订使用独立GitHub构建标签及SHA-256区分，不覆盖旧tag/归档，并使用不同构建身份/哈希的安装来源避免缓存复用。当前GitHub `.tgz` 规则不代表npm registry允许覆盖同版本。
 - 历史版本及验收记录保留原号；新版本验收重新绑定实际归档。详细规则见 [ADR-003](docs/decisions/003-host-aligned-versioning.md)。

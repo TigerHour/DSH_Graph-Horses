@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -41,7 +42,7 @@ async function fixture(t: { after: (cleanup: () => Promise<void>) => void }, ada
   const modules = structuredClone(employee.modules); modules.model = { mode: 'override', provider: 'review', model: 'review' }; modules.capabilities.skills = []; modules.collaboration.allowedTemplateIds = [ARCHITECT_TEMPLATE_ID];
   employee = await store.updateEmployee(employee.id, { modules });
   const ctx = new Context();
-  for (const plugin of [LlmRuntime, SessionStore, SessionProjectionRegistry, SystemPrompt, ToolRuntime, AgentRegistry]) await ctx.plugin(plugin);
+  for (const plugin of [LlmRuntime, SessionStore, SessionProjectionRegistry, SystemPrompt, ToolRuntime, NativeToolExecutor, AgentRegistry]) await ctx.plugin(plugin);
   await ctx.plugin(AgentLoop, { agents: [] }); ctx.llm.registerAdapter(['review'], adapter);
   ctx.provide('workspaceRegistry', { get: () => ({ sessionIds: [], attachSession: async () => undefined }) } as never);
   const runtime = new WorkforceRuntime(ctx, store, new Map(), { maxRunMs: 1000 });

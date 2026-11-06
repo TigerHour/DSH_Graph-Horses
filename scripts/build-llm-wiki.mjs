@@ -1,6 +1,6 @@
 import { build } from 'esbuild';
 import ts from 'typescript';
-import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -10,6 +10,7 @@ const origin = 'https://github.com/nashsu/llm_wiki';
 const upstreamFiles = ['wiki-graph.ts', 'graph-relevance.ts', 'wiki-graph-analysis.ts', 'graph-insights.ts', 'frontmatter.ts', 'path-utils.ts', 'ingest.ts', 'wiki-graph-analysis.worker.ts'];
 
 async function dependencyLicenses(root, component, output, inputs) {
+  await rm(resolve(output, 'licenses'), { recursive: true, force: true });
   const manifests = new Map();
   for (const input of inputs) {
     const fullPath = resolve(root, input);

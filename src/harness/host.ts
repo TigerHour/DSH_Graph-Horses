@@ -8,10 +8,12 @@ import type { Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-host-webserver';
 import type {} from '@deepseek-ai/dsh-client-connection';
 import type {} from '@deepseek-ai/dsh-api-session-controller';
+import type {} from '@deepseek-ai/dsh-agent-default-model';
+import { ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { WorkforceStore } from '../domain/store.js';
 import { ARCHITECT_TEMPLATE_ID, SOFTWARE_TEAM_ID } from '../domain/seed.js';
-import type { CreateEmployeeInput, CreateProjectEmployeesInput, MutationOptions, ReviewRunInput, SaveEmployeeConfigurationInput, SaveMemoryInput, SaveTeamInput, SaveTemplateInput, UpdateEmployeeInput } from '../domain/types.js';
+import type { CreateEmployeeInput, CreateProjectEmployeesInput, MutationOptions, ReviewRunInput, SaveEmployeeConfigurationInput, SaveMemoryInput, SaveTeamInput, SaveTemplateInput, UpdateEmployeeInput, WorkforceState } from '../domain/types.js';
 import { DEFAULT_RUNTIME_CONFIG, WorkforceRuntime, type RunRequest, type RuntimeConfig } from './runtime.js';
 import { loadEmployeeSkills, registerEmployeeSkills } from './skills.js';
 import type { CancelProjectTeamsInput, ConfigureProjectTeamInput, SetProjectTeamKnowledgeInput } from '../domain/types.js';
@@ -39,10 +41,10 @@ import { isLegacyStandaloneRun } from '../domain/conversation-session.js';
 import { isConversationAgentBusy } from './conversation-activity.js';
 import { requireConversationWorkflowReview, resolveConversationWorkflowDetails, type ConversationWorkflowReviewInput } from '../domain/conversation-workflow-details.js';
 import { conversationWorkflowsEnabled } from './workspace-policy.js';
-import { assertNoAdditionalTemporaryEmployeeMention, conversationEmployeeChoices, employeeInfoCard, hasTemporaryEmployeeMentionMarker, parseTemporaryEmployeeMentionMarker, resolveConversationEmployee, resolveEmployeeInfo, resolveTemporaryEmployeeMention, type AdmitTemporaryConversationEmployeeInput, type ConversationEmployeeView, type SelectConversationEmployeeInput, type ClearConversationEmployeeInput } from '../domain/conversation-employee.js';
+import { admitTemporaryConversationEmployee, assertNoAdditionalTemporaryEmployeeMention, conversationEmployeeChoices, employeeInfoCard, hasTemporaryEmployeeMentionMarker, parseTemporaryEmployeeMentionMarker, resolveConversationEmployee, resolveEmployeeInfo, resolveTemporaryEmployeeMention, type AdmitTemporaryConversationEmployeeInput, type ConversationEmployeeView, type SelectConversationEmployeeInput, type ClearConversationEmployeeInput } from '../domain/conversation-employee.js';
 
 export const name = 'composable-workforce';
-export const inject = ['webServer', 'connection', 'agents', 'tools', 'systemPrompt', 'skills', 'workspaceRegistry', 'sessionController', 'agentPresets', 'llm'];
+export const inject = ['webServer', 'connection', 'agents', 'tools', 'systemPrompt', 'skills', 'workspaceRegistry', 'sessionController', 'agentPresets', 'llm', 'agentDefaultModel', 'sessionQuery'];
 export interface Config extends Partial<RuntimeConfig> {
   statePath?: string;
   skillsDirectory?: string;
@@ -96,6 +98,12 @@ export function createTemporaryEmployeeMentionTickets(options: { now?: () => num
     },
     dispose(): void { tickets.clear(); },
   };
+}
+
+/** Resolve the same existing instance that read-only temporary admission will reuse. */
+export function resolveTemporaryEmployeeModel(state: WorkforceState, input: AdmitTemporaryConversationEmployeeInput) {
+  const existing = admitTemporaryConversationEmployee(state, input);
+  return existing?.employee?.modules.model ?? state.templates.find(template => template.id === input.templateId)?.modules.model;
 }
 
 function json(res: ServerResponse, code: number, value: unknown): void {
@@ -177,6 +185,43 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   };
   const disposeConversationRuntime = registerConversationWorkflowRuntime(ctx, {
     isDeliverySession,
+    tools: runtime.conversationToolDefinitions(),
+    selectModel: (agent, turnKey, requestText) => {
+      const workspace = workspaceForSession(agent.id);
+      if (!workspace) return undefined;
+      const state = store.snapshot();
+      let configured;
+      let consult = false;
+      if (conversationWorkflowsEnabled(workspace)) {
+        const view = resolveConversationWorkflow(state, workspace.id, agent.id);
+        if (!view.instanceId) return undefined;
+        if (view.unavailableReason || !view.owner) throw new Error(view.unavailableReason ?? '请先选择当前流程负责人');
+        configured = view.owner.modules.model;
+      } else {
+        const ticket = hasTemporaryEmployeeMentionMarker(requestText) ? mentionTickets.claim(agent.id, turnKey, requestText) : undefined;
+        const temporary = ticket?.input ?? resolveTemporaryEmployeeMention(state, workspace.id, requestText);
+        if (temporary) {
+          const input: AdmitTemporaryConversationEmployeeInput = 'kind' in temporary ? {
+            projectId: workspace.id, sessionId: agent.id, turnKey, expectedTargetVersion: temporary.version,
+            ...(temporary.kind === 'employee' ? { employeeId: temporary.id } : { templateId: temporary.id }),
+          } : temporary;
+          configured = resolveTemporaryEmployeeModel(state, input);
+          if (!configured) throw new Error('临时员工已失效，请重新选择');
+        } else {
+          const resident = resolveConversationEmployee(state, workspace.id, agent.id);
+          if (!resident.conversationEmployee) return undefined;
+          if (resident.unavailableReason || !resident.employee) throw new Error(resident.unavailableReason ?? '常驻员工已不可用');
+          configured = resident.employee.modules.model;
+          consult = resident.conversationEmployee.mode === 'consult';
+        }
+      }
+      const model = configured.mode === 'inherit' ? ctx.agentDefaultModel.currentSelection() : {
+        provider: configured.provider, model: configured.model,
+        ...(configured.reasoningEffort ? { reasoningEffort: ReasoningEffortId(configured.reasoningEffort) } : {}),
+      };
+      if (!model.provider || !model.model) throw new Error('DSH 尚未设置默认模型，请在“模型选择”中选择岗位模型');
+      return { model: { ...model, provider: model.provider, model: model.model }, ...(consult ? { toolPolicy: 'consult' as const } : {}) };
+    },
     ownsPendingTurn: (agent, requestText) => {
       const workspace = workspaceForSession(agent.id);
       if (!workspace) return false;
@@ -208,18 +253,18 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
               ...(target.kind === 'employee' ? { employeeId: target.id } : { templateId: target.id }) };
           }
           const temporary = await store.admitTemporaryConversationEmployee(input);
-          return runtime.openEmployeeConversationTurn(agent, turnKey, parseTemporaryEmployeeMentionMarker(requestText)?.requestText ?? requestText, temporary, signal);
+          return runtime.openEmployeeConversationTurn(agent, turnKey, parseTemporaryEmployeeMentionMarker(requestText)?.requestText ?? requestText, temporary, signal, context?.modelSelection);
         }
         const resident = resolveConversationEmployee(store.snapshot(), workspace.id, agent.id);
         if (!resident.conversationEmployee) return undefined;
         if (resident.unavailableReason) throw new Error(resident.unavailableReason);
-        return runtime.openEmployeeConversationTurn(agent, turnKey, requestText, resident, signal);
+        return runtime.openEmployeeConversationTurn(agent, turnKey, requestText, resident, signal, context?.modelSelection);
       }
       const view = resolveConversationWorkflow(store.snapshot(), workspace.id, agent.id);
       if (!view.instanceId) return undefined;
       if (view.unavailableReason) throw new Error(view.unavailableReason);
       if (!view.currentStepId || !view.owner) throw new Error('此工作流已完成，请选择需要继续的步骤或将工作流设为“无”');
-      return runtime.openConversationTurn(agent, turnKey, requestText, view, signal);
+      return runtime.openConversationTurn(agent, turnKey, requestText, view, signal, context?.modelSelection);
     },
     onError: error => ctx.logger.error(error),
   });

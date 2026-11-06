@@ -61,7 +61,7 @@ its source and build outputs.
 Knowledge context retention calls the public DeepSeek Harness Session surface
 replacement protocol and imports the public token-meter estimate module as an
 external runtime peer. `@deepseek-ai/dsh-token-meter` and
-`@deepseek-ai/dsh-compaction` version `0.2.1-rc.3` remain supplied by the host
+`@deepseek-ai/dsh-compaction` version `0.2.2-rc.1` remain supplied by the host
 profile; their MIT-licensed implementation is not embedded or patched here.
 
 The notice below is retained for the historical integration patch in the source

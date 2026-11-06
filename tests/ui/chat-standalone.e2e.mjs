@@ -15,7 +15,7 @@ import { prepareOfficialPluginRuntime } from './official-plugin-runtime.mjs';
 import { closeFixtureBrowser } from './browser-cleanup.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-process.env.DSH_INSTALLATION_MANIFEST ||= resolve(root, '.local/official-0.2.1-rc.3/node_modules/@deepseek-ai/dsh/package.json');
+process.env.DSH_INSTALLATION_MANIFEST ||= resolve(root, '.local/official-0.2.2-rc.1/node_modules/@deepseek-ai/dsh/package.json');
 const installation = await resolveCliInstallation(root);
 const temp = await mkdtemp(resolve(tmpdir(), 'workforce-chat-standalone-ui-'));
 const artifacts = resolve(process.env.WORKFORCE_CHAT_UI_ARTIFACTS || resolve(root, 'artifacts/chat-workflow/official-ui'));

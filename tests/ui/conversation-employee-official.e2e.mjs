@@ -15,7 +15,7 @@ import { prepareOfficialPluginRuntime } from './official-plugin-runtime.mjs';
 import { closeFixtureBrowser } from './browser-cleanup.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-process.env.DSH_INSTALLATION_MANIFEST ||= resolve(root, '.local/official-0.2.1-rc.3/node_modules/@deepseek-ai/dsh/package.json');
+process.env.DSH_INSTALLATION_MANIFEST ||= resolve(root, '.local/official-0.2.2-rc.1/node_modules/@deepseek-ai/dsh/package.json');
 const installation = await resolveCliInstallation(root), temp = await mkdtemp(resolve(tmpdir(), 'workforce-resident-official-ui-'));
 const artifacts = resolve(process.env.WORKFORCE_RESIDENT_UI_ARTIFACTS || resolve(root, 'artifacts/conversation-employee/official-ui'));
 const archive = process.env.WORKFORCE_UI_ARCHIVE && resolve(process.env.WORKFORCE_UI_ARCHIVE);
@@ -189,7 +189,8 @@ try {
   assert.ok((await state()).runs.every(run => run.sessionId === sessionId), 'all resident/temporary turns use the original native session');
   check('none-clears-even-paused-employee-and-temporary-mention-then-restores-native-without-extra-session');
   for (const width of [1024, 768]) {
-    await page.setViewportSize({ width, height: 1050 }); await expect(trigger).toBeVisible(); const bounds = await trigger.boundingBox(); assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width, JSON.stringify(bounds));
+    await page.setViewportSize({ width, height: 1050 }); await expect(trigger).toBeVisible();
+    await expect.poll(async () => { const bounds = await trigger.boundingBox(); return !!bounds && bounds.x >= 0 && bounds.x + bounds.width <= width; }).toBe(true);
     await trigger.click(); const popup = await menu.boundingBox(); assert.ok(popup.x >= 8 && popup.x + popup.width <= width - 8, JSON.stringify(popup)); await menu.locator('[role="listbox"]').press('Escape');
   }
   await page.setViewportSize({ width: 1512, height: 1050 });

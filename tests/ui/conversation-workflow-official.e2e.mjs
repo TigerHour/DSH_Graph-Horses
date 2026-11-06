@@ -13,6 +13,7 @@ import { authenticateWeb, redactWebAuth } from '../../integration/web-auth.mjs';
 import { installEmployeeSettingsFixture } from './employee-settings-offline.fixture.mjs';
 import { prepareOfficialPluginRuntime } from './official-plugin-runtime.mjs';
 import { switchDshLocale } from './locale-switch.checks.mjs';
+import { closeFixtureBrowser } from './browser-cleanup.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 process.env.DSH_INSTALLATION_MANIFEST ||= resolve(root, '.local/official-validation-complete/node_modules/@deepseek-ai/dsh/package.json');
@@ -24,7 +25,7 @@ const delay = ms => new Promise(done => setTimeout(done, ms));
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const hostHash = async () => sha(Buffer.concat([await readFile(installation.entry), await readFile(installation.manifest)]));
 const hostBefore = await hostHash();
-let child, browser, page, cookie = '', log = '', pluginRoot = root, callsPath;
+let child, browser, browserServer, page, cookie = '', log = '', pluginRoot = root, callsPath;
 const checks = [], errors = [], metrics = {};
 const check = name => { checks.push(name); console.log(`PASS ${name}`); };
 const luminance = color => {
@@ -55,7 +56,7 @@ async function freePort() {
   const address = server.address(); assert.ok(address && typeof address === 'object'); await new Promise(done => server.close(done)); return address.port;
 }
 async function stop() {
-  if (!child || child.exitCode !== null) return;
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
   child.kill('SIGTERM'); for (let i = 0; i < 50 && child.exitCode === null; i++) await delay(100);
   if (child.exitCode === null) { child.kill('SIGKILL'); await delay(250); }
 }
@@ -167,7 +168,8 @@ try {
   await expect.poll(async () => (await calls()).filter(request => request.model === 'native-default' && JSON.stringify(request.messages).includes('WF_NATIVE_PREHISTORY_')).length, { timeout: 20000 }).toBeGreaterThanOrEqual(2);
   await delay(250);
   await rpc('session/rename', { sessionId: a, title: 'QA-工作流对话甲' }); await rpc('session/rename', { sessionId: b, title: 'QA-工作流对话乙' });
-  browser = await chromium.launch({ headless: true, ...(process.env.WORKFORCE_BROWSER_CHANNEL === 'bundled' ? { args: ['--enable-unsafe-swiftshader'] } : { channel: process.env.WORKFORCE_BROWSER_CHANNEL || 'chrome' }) });
+  browserServer = await chromium.launchServer({ headless: true, host: '127.0.0.1', ...(process.env.WORKFORCE_BROWSER_CHANNEL === 'bundled' ? { args: ['--enable-unsafe-swiftshader'] } : { channel: process.env.WORKFORCE_BROWSER_CHANNEL || 'chrome' }) });
+  browser = await chromium.connect(browserServer.wsEndpoint());
   page = await browser.newPage({ viewport: { width: 1512, height: 1050 }, colorScheme: 'dark', locale: 'zh-CN' }); page.on('pageerror', error => errors.push(error.message));
   metrics.pageNavigations = [];
   page.on('framenavigated', frame => { if (frame === page.mainFrame()) metrics.pageNavigations.push({ time: Date.now(), url: redactWebAuth(frame.url()) }); });
@@ -611,9 +613,11 @@ try {
   await page.setViewportSize({ width: 712, height: 1000 });
   await openDetails(); await inspectStep('return-step-6');
   await detailsDialog().getByRole('button', { name: '设为当前', exact: true }).click(); await expect.poll(async () => (await view(b)).currentStepId).toBe('return-step-6'); await closeDetails();
-  await expect(steps()).toHaveCount(1); await expect(steps().first().locator('.wf-conversation-workflow-step-number')).toHaveText('6');
+  const narrowCurrent = strip().locator('.wf-conversation-workflow-step[aria-current="step"]');
+  await expect(narrowCurrent).toHaveCount(1); await expect(narrowCurrent.locator('.wf-conversation-workflow-step-number')).toHaveText('6');
+  await expect(steps().filter({ hasText: '布局步骤2' })).toHaveCount(0);
   await expect(strip().locator('path[data-kind="reject"]')).toHaveCount(0);
-  await expect(steps().first()).toHaveAttribute('aria-label', /布局步骤2/);
+  await expect(narrowCurrent).toHaveAttribute('aria-label', /布局步骤2/);
   const hiddenReturn = await graphGeometry(); assertUpperReturns(hiddenReturn, multiReturnFlow.steps); metrics.hiddenReturn = hiddenReturn;
   const hiddenScroll = await strip().evaluate(node => node.scrollLeft); await strip().hover(); await page.mouse.wheel(1000, 0); assert.equal(await strip().evaluate(node => node.scrollLeft), hiddenScroll);
   await page.mouse.move(300, 300); await page.screenshot({ path: resolve(artifacts, 'native-hidden-return-target-narrow-dark.png') });
@@ -771,7 +775,7 @@ try {
   assert.equal(requests.length, 2, 'one owner turn may contain the plan tool call and its final answer, without reserving a second run'); assert.equal(requests[0].model, 'owner-product');
   assert.ok(JSON.stringify(requests[0].messages).includes('WF_NATIVE_PREHISTORY_A_917'), 'the same native session keeps pre-workflow history');
   assert.ok(requests[0].messages.some(message => message.role === 'user' && message.source?.kind === 'user-approval'
-    && message.content.some(block => block.type === 'text' && block.text.includes('The approval policy changed') && block.text.includes('"never"'))),
+    && message.content.some(block => block.type === 'text' && block.text.includes('The user changed the approval policy') && block.text.includes('"never ask the user for approval"'))),
   'the next actual owner turn receives the original native permission notice; unlocking workflow choices cannot drop it');
   metrics.permissionChange.noticePreservedInOwnerRequest = true;
   for (const sentinel of ['WF_STEP_REQUIREMENTS_917', 'WF_OUTPUT_REQUIREMENTS_917', 'WF_ACCEPT_REQUIREMENTS_917']) assert.ok(JSON.stringify(requests[0]).includes(sentinel), sentinel);
@@ -860,21 +864,21 @@ try {
   await pick('无'); await expect(strip()).toHaveCount(0);
   const beforeNoneRuns = (await state()).runs.length;
   const containsRequest = (request, sentinel) => (JSON.stringify(request.messages.filter(message => message.source?.kind === 'user').at(-1)?.content) || '').includes(sentinel);
-  await send('WF_NONE_LASTUSED_917：恢复普通原生对话');
-  await expect.poll(async () => (await calls()).filter(request => request.model === 'owner-developer' && containsRequest(request, 'WF_NONE_LASTUSED_917')).length, { timeout: 20000 }).toBe(1);
-  const noneRequest = (await calls()).find(request => request.model === 'owner-developer' && containsRequest(request, 'WF_NONE_LASTUSED_917'));
+  await send('WF_NONE_RESTORED_917：恢复普通原生对话');
+  await expect.poll(async () => (await calls()).filter(request => request.model === 'native-default' && containsRequest(request, 'WF_NONE_RESTORED_917')).length, { timeout: 20000 }).toBe(1);
+  const noneRequest = (await calls()).find(request => request.model === 'native-default' && containsRequest(request, 'WF_NONE_RESTORED_917'));
   const currentContext = noneRequest.messages.filter(message => message.source?.kind === 'runtime-context').at(-1);
   assert.ok(!currentContext?.source.sections.some(section => section.name === 'composable-workforce:conversation-workflow'), 'None must remove active workflow context from the current native request');
   assert.ok(!noneRequest.tools?.some(name => name.startsWith('worker_')), 'None must remove workflow business tools');
   // Explicit native model selection is a real user action in this isolated fixture.
-  // None itself preserves Harness lastUsed policy and never resets a global default.
-  await rpc('session/selectModel', { sessionId: a, provider: 'employee-settings-fixture', model: 'native-default' });
+  // None preserves the restored native Session choice, without changing deployment defaults.
+  await rpc('session/selectModel', { sessionId: a, provider: 'employee-settings-fixture', model: 'owner-developer' });
   await send('WF_NONE_EXPLICIT_917：遵循我明确选择的原生模型');
-  await expect.poll(async () => (await calls()).filter(request => request.model === 'native-default' && containsRequest(request, 'WF_NONE_EXPLICIT_917')).length, { timeout: 20000 }).toBe(1);
+  await expect.poll(async () => (await calls()).filter(request => request.model === 'owner-developer' && containsRequest(request, 'WF_NONE_EXPLICIT_917')).length, { timeout: 20000 }).toBe(1);
   assert.equal((await state()).runs.length, beforeNoneRuns, 'None must not reserve an employee attempt');
   await writeFile(resolve(artifacts, 'captured-native-requests.json'), JSON.stringify(await calls(), null, 2));
-  metrics.noneModelPolicy = { withoutExplicitSelection: noneRequest.model, explicitNativeSelection: 'native-default', workflowRunsCreated: 0, activeWorkflowContext: false, businessTools: false };
-  check('none-removes-owner-context-tools-and-tracking-and-obeys-native-last-used-and-explicit-model-selection');
+  metrics.noneModelPolicy = { withoutExplicitSelection: noneRequest.model, explicitNativeSelection: 'owner-developer', workflowRunsCreated: 0, activeWorkflowContext: false, businessTools: false };
+  check('none-removes-owner-context-tools-and-tracking-and-restores-native-session-and-explicit-model-selection');
   await expect(page.getByRole('button', { name: '任务与交付', exact: true })).toHaveCount(0);
   await expect(page.locator('.wf-native-delivery-entry')).toHaveCount(0);
   assert.equal((await view(a)).instanceId, null, 'None keeps the workflow unselected and no obsolete dock contributes UI');
@@ -1059,4 +1063,4 @@ try {
   if (page) await writeFile(resolve(artifacts, 'failure-page.txt'), redactWebAuth(await page.locator('body').innerText())).catch(() => {});
   await writeFile(resolve(artifacts, 'failure-report.json'), JSON.stringify({ checks, metrics, errors }, null, 2)).catch(() => {});
   console.error(redactWebAuth(error?.stack || String(error))); console.error(redactWebAuth(log.slice(-12000))); process.exitCode = 1;
-} finally { await browser?.close(); await stop(); await rm(temp, { recursive: true, force: true }); }
+} finally { await closeFixtureBrowser({ page, browser, browserServer }); await stop(); await rm(temp, { recursive: true, force: true }); }

@@ -1,5 +1,15 @@
 # 更新记录
 
+## 0.2.2 — 2026-11-07
+
+- 适配官方 DSH `0.2.2-rc.1`，精确同步运行时 peer、Cordis `4.1.0`、loader `1.1.0` 和 Node `>=24.9.0`；旧宿主继续使用原有不可变归档。
+- 在官方 inbox 领取阶段选择岗位模型，工具通过每步解析和激活契约准入，保留原生发送、历史、权限和执行器；会话读取采用新版公开查询入口。
+- 咨询模式隐藏业务工具并拒绝执行；PTC 宿主仍可能声明 `run_code`，不接管或替换用户的原生执行器。
+- 将独立 Wiki 子程序的源码依赖 `js-yaml` 更新至修复版本 `4.3.2`，同步锁与许可文件，并在构建时清除过期的生成许可文件。
+- 安装说明明确 DeepSeek Messages 官方根地址为 `https://api.deepseek.com/anthropic`；旧 Chat Completions 根地址不能直接用于该适配器。
+- 归档、安装/卸载、升级数据保留及原生功能验证绑定本次新包哈希，见 [0.2.2 验收记录](integration/verification-0.2.2.md)。
+- Target the exact official DSH 0.2.2-rc.1 runtime, prepare employee model/tool selection before native step capture, preserve host executors, and document the Messages endpoint and PTC consultation limitation.
+
 ## 0.2.1 / plugin.5 — 2026-10-26
 
 - 修复 Desktop 员工选择按钮的可见文字/箭头无法按实际位置点击：保留官方 header 插槽占位，交互按钮及弹层使用插件自有、紧尺寸的固定 portal，与真实可视区域一致，不再溢出标题行容器。

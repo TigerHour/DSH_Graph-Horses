@@ -1,8 +1,10 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native';
+import * as PtcToolExecutor from '@deepseek-ai/dsh-tool-executor-ptc';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
 import { Context } from '@deepseek-ai/cordis';
-import AgentRegistry, { installModelSelection, type AgentHandle, type ModelSelectionRef } from '@deepseek-ai/dsh-agent';
+import AgentRegistry, { installModelSelection, type AgentHandle, type ModelSelection } from '@deepseek-ai/dsh-agent';
 import AgentLoop from '@deepseek-ai/dsh-agent-loop';
 import LlmRuntime, { createAssistantMessage, createToolResultMessage, createUserMessage, LlmAdapter, ReasoningEffortId, ToolCallId, type GenerateOptions, type LlmResolvedModelInfo, type StreamChunk } from '@deepseek-ai/dsh-llm';
 import SessionStore, { Session, SessionId, SessionLogOffset, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session';
@@ -23,13 +25,15 @@ const text = (value: string): StreamChunk[] => [
   { type: 'block-end', index: 0, block: { type: 'text', text: value } },
   { type: 'finish', reason: { kind: 'stop' } },
 ];
-const call = (name: string): StreamChunk[] => [
+const call = (name: string, args = '{}'): StreamChunk[] => [
   { type: 'block-start', index: 0, blockType: 'tool-call' },
-  { type: 'tool-call-delta', index: 0, id: ToolCallId(`call-${name}`), name, argumentsDelta: '{}' },
-  { type: 'block-end', index: 0, block: { type: 'tool-call', id: ToolCallId(`call-${name}`), name, arguments: '{}' } },
+  { type: 'tool-call-delta', index: 0, id: ToolCallId(`call-${name}`), name, argumentsDelta: args },
+  { type: 'block-end', index: 0, block: { type: 'tool-call', id: ToolCallId(`call-${name}`), name, arguments: args } },
   { type: 'finish', reason: { kind: 'tool-calls' } },
 ];
 class FixtureSessionQuery extends SessionQueryEngine {
+  observations = 0;
+  override async observeSession(...args: Parameters<SessionQueryEngine['observeSession']>) { this.observations++; return super.observeSession(...args); }
   async searchSessions(): Promise<never> { throw new Error('Search is not used by the context fixture'); }
   async searchEvents(): Promise<never> { throw new Error('Search is not used by the context fixture'); }
 }
@@ -64,27 +68,33 @@ async function fixture(scripts: ConstructorParameters<typeof ScriptedAdapter>[0]
   await ctx.plugin(SessionProjectionRegistry);
   await ctx.plugin(FixtureSessionQuery);
   await ctx.plugin(SystemPrompt);
+  let ptcExecutions = 0;
   if (options.toolsMode === 'ptc') ctx.provide('ptcRuntime', {
-    language: 'typescript', isolation: 'process', executionInstructions: 'Fixture PTC runtime: no program execution in this schema test.',
+    language: 'typescript', isolation: 'process', programFormat: 'function-body', retainsState: false, executionInstructions: 'Fixture PTC runtime.',
+    resolve: (request: { cwd?: string; timeoutMs?: number }) => ({ ...request, cwd: request.cwd ?? process.cwd(), timeoutMs: request.timeoutMs ?? 1000 }),
+    run: async () => { ptcExecutions++; return { value: 'FIXTURE_PROGRAM_EXECUTED', logs: [] }; }, release: async () => {},
     sandboxMode: 'workspace-write', timeout: { defaultMs: 1000, maxMs: 1000 },
   } as never);
-  await ctx.plugin(ToolRuntime, { mode: options.toolsMode ?? 'native' });
+  await ctx.plugin(ToolRuntime);
+  await ctx.plugin(options.toolsMode === 'ptc' ? PtcToolExecutor : NativeToolExecutor);
   await ctx.plugin(AgentRegistry);
   await ctx.plugin(AgentLoop, { agents: [] });
   const adapter = new ScriptedAdapter(scripts, options.inHistory);
   ctx.llm.registerAdapter(['fixture'], adapter);
   ctx.systemPrompt.section({ name: 'native-complete', order: -1000, text: 'NATIVE_COMPLETE_SYSTEM', complete: options.toolsMode !== 'ptc' });
   ctx.systemPrompt.context({ name: 'native-policy', order: 0, required: true, text: 'NATIVE_PERMISSION_CONTEXT' });
-  const selection: ModelSelectionRef = { current: { provider: 'fixture', model: 'native-model' }, assembled: undefined };
   let handle: AgentHandle;
+  const selection = { get current() { return handle.agent.model.current(); }, set current(value: Readonly<ModelSelection> | undefined) { if (value) handle.agent.model.select(value); } };
   const create = async () => {
     handle = await ctx.agents.create({ sessionId: SessionId(`native-workflow-${Math.random()}`),
       meta: { cwd: process.cwd() }, agentOptions: { provider: 'fixture', model: 'native-model', ...(options.nativeMaxTokens === undefined ? {} : { maxTokens: options.nativeMaxTokens }) },
-      setup: agentCtx => { installModelSelection(agentCtx, selection); },
+      setup: agentCtx => { installModelSelection(agentCtx); },
     });
   };
   if (options.existing) { await create(); options.beforeRegister?.(handle!.agent, ctx); }
   const dispose = registerConversationWorkflowRuntime(ctx, {
+    selectModel: () => ({ model: { provider: 'fixture', model: 'owner-one' } }),
+    tools: ['workflow_fixture', 'partial_lease_tool', 'worker_memory_search', 'worker_memory_write'].map(name => tool(name)),
     readEvents: async (agent, signal) => {
       const observation = await ctx.sessionQuery.observeSession(agent.id, { signal, projectionMode: 'none' });
       try { return observation.events; } finally { observation[Symbol.dispose](); }
@@ -97,7 +107,7 @@ async function fixture(scripts: ConstructorParameters<typeof ScriptedAdapter>[0]
     // The durable turn/end listener starts asynchronous business settlement.
     await new Promise(resolve => setImmediate(resolve));
   };
-  return { ctx, adapter, selection, agent: handle!.agent, send, dispose,
+  return { ctx, adapter, selection, agent: handle!.agent, send, dispose, ptcExecutions: () => ptcExecutions,
     cleanup: async () => { await dispose(); await handle.dispose(); },
   };
 }
@@ -105,17 +115,26 @@ const lease = (id = 'owner-one', extra: Partial<NativeWorkflowLease> = {}): Nati
   id, prompt: `WORKFLOW_OWNER_CONTEXT:${id}`, model: { provider: 'fixture', model: id }, ...extra,
 });
 
-for (const toolsMode of ['native', 'ptc'] as const) test(`light consultation uses public scoped restrictions and an empty authoritative assembly (${toolsMode})`, async () => {
+for (const toolsMode of ['native', 'ptc'] as const) test(`light consultation denies old and new calls while preserving the native executor (${toolsMode})`, async () => {
   let consult = true, executed = 0;
   const f = await fixture([
-    request => { assert.equal(request.tools?.length ?? 0, 0); return call('native_fixture'); },
+    async request => {
+      assert.equal(request.tools?.length ?? 0, toolsMode === 'ptc' ? 1 : 0);
+      const name = toolsMode === 'ptc' ? 'run_code' : 'native_fixture';
+      const args = toolsMode === 'ptc' ? JSON.stringify({ code: 'MUST_NOT_RUN', description: 'Prohibited consultation program' }) : '{}';
+      const denied = await f.ctx.tools.execute({ calls: [{ type: 'tool-call', id: ToolCallId('new-consultation-call'), name, arguments: args }], signal: new AbortController().signal, agent: f.agent });
+      assert.equal(denied.results[0]?.result.isError, true);
+      assert.match(JSON.stringify(denied), /轻咨询/);
+      return call(name, args);
+    },
     request => { assert.match(JSON.stringify(request), /轻咨询/); return text('consult done'); },
     request => { assert.ok(request.tools?.length); return text('native restored'); },
-  ], { isDeliverySession: () => false, prepare: async () => consult ? lease('consult', { toolPolicy: 'consult' }) : undefined }, { toolsMode });
+  ], { isDeliverySession: () => false, selectModel: () => consult ? { model: { provider: 'fixture', model: 'consult' }, toolPolicy: 'consult' } : undefined, prepare: async () => consult ? lease('consult', { toolPolicy: 'consult' }) : undefined }, { toolsMode });
   const remove = f.ctx.tools.register(tool('native_fixture', async () => { executed++; return 'SHOULD_NOT_EXECUTE'; }));
   try {
     await f.send('CONSULT_ORIGINAL');
     assert.equal(executed, 0, 'even an unsolicited or historical tool call is rejected');
+    assert.equal(f.ptcExecutions(), 0, 'host PTC runtime is never reached by old or new consultation calls');
     assert.equal(f.adapter.requests.length, 2);
     assert.ok(f.agent.ctx.tools.get('native_fixture', f.agent), 'restriction released at turn end');
     consult = false;
@@ -166,7 +185,7 @@ test('first native request has frozen owner context and tools while complete nat
     assert.equal(results.length, 1);
     assert.equal(results[0]![0]!.type, 'turn/start');
     assert.equal(results[0]!.at(-1)!.type, 'turn/end');
-    assert.equal(f.agent.ctx.tools.get('workflow_fixture', f.agent), undefined, 'lease tool disappears on turn end');
+    assert.equal(f.agent.ctx.tools.executable('workflow_fixture', f.agent), undefined, 'lease tool disappears on turn end');
     assert.ok(f.agent.session.snapshotEvents().some(event => event.type === 'assistant/message'));
   } finally { await f.cleanup(); }
 });
@@ -195,6 +214,7 @@ test('changing selection mid-turn keeps the owner frozen and None restores nativ
     },
   ], {
     isDeliverySession: () => false,
+    selectModel: () => selected ? { model: { provider: 'fixture', model: selected } } : undefined,
     prepare: async () => { prepared++; return selected ? lease(selected, { tools: [tool()] }) : undefined; },
   });
   try {
@@ -281,7 +301,7 @@ test('failed step authorization still finishes and releases the lease exactly on
   try {
     await f.send('revoked');
     assert.equal(f.adapter.requests.length, 0); assert.equal(finished, 1); assert.equal(disposed, 1);
-    assert.equal(f.agent.ctx.tools.get('workflow_fixture', f.agent), undefined);
+    assert.equal(f.agent.ctx.tools.executable('workflow_fixture', f.agent), undefined);
   } finally { await f.cleanup(); }
 });
 
@@ -323,7 +343,7 @@ test('unloading cancels an owned turn, removes scoped tools, and preserves the h
     await f.dispose(); await sending;
     assert.equal(finished, 1); assert.equal(disposed, 1);
     assert.equal(f.ctx.agents.get(f.agent.id), f.agent);
-    assert.equal(f.agent.ctx.tools.get('workflow_fixture', f.agent), undefined);
+    assert.equal(f.agent.ctx.tools.executable('workflow_fixture', f.agent), undefined);
     await f.send('plain after unload');
     assert.equal(f.adapter.requests.length, 2);
   } finally { await f.cleanup(); }
@@ -334,7 +354,7 @@ test('unloading a plain native turn does not cancel it', async () => {
   const f = await fixture([async request => {
     entered.resolve(); await release.promise;
     assert.equal(request.signal?.aborted, false); return text('ordinary native completion');
-  }], { isDeliverySession: () => false, prepare: async () => undefined });
+  }], { isDeliverySession: () => false, selectModel: () => undefined, prepare: async () => undefined });
   try {
     const sending = f.send('plain native turn'); await entered.promise;
     const closing = f.dispose();
@@ -363,7 +383,7 @@ test('lease model clears inherited reasoning effort and None restores the curren
   const f = await fixture([
     request => { assert.equal(request.reasoningEffort, undefined); return text('owner provider default'); },
     request => { assert.equal(request.reasoningEffort, 'high'); return text('native high'); },
-  ], { isDeliverySession: () => false, prepare: async () => selected ? lease() : undefined });
+  ], { isDeliverySession: () => false, selectModel: () => selected ? { model: { provider: 'fixture', model: 'owner-one' } } : undefined, prepare: async () => selected ? lease() : undefined });
   try {
     f.selection.current = { provider: 'fixture', model: 'native-model', reasoningEffort: ReasoningEffortId('high') };
     await f.send('owner'); selected = false; await f.send('native');
@@ -405,7 +425,7 @@ test('cancelling asynchronous preparation releases a returned lease without any 
     const sending = f.send('cancel preparation'); await entered.promise;
     f.agent.cancel({ kind: 'user' }); complete.resolve(); await sending;
     assert.equal(f.adapter.requests.length, 0); assert.equal(finished, 1); assert.equal(disposed, 1);
-    assert.equal(f.agent.ctx.tools.get('workflow_fixture', f.agent), undefined);
+    assert.equal(f.agent.ctx.tools.executable('workflow_fixture', f.agent), undefined);
   } finally { complete.resolve(); await f.cleanup(); }
 });
 
@@ -419,7 +439,7 @@ test('a tool registration conflict preserves the native tool and releases earlie
   try {
     await f.send('conflicting tool');
     assert.equal(f.adapter.requests.length, 0); assert.equal(finished, 1); assert.equal(disposed, 1);
-    assert.equal(f.agent.ctx.tools.get('partial_lease_tool', f.agent), undefined);
+    assert.equal(f.agent.ctx.tools.executable('partial_lease_tool', f.agent), undefined);
     assert.ok(f.agent.ctx.tools.get('existing_native_tool', f.agent));
   } finally { removeNativeTool(); await f.cleanup(); }
 });
@@ -429,6 +449,7 @@ test('a failing finish callback reports once, disposes its lease, and permits th
   let selected = true; let disposed = 0;
   const f = await fixture([() => text('one'), () => text('native')], {
     isDeliverySession: () => false, onError: error => errors.push(error),
+    selectModel: () => selected ? { model: { provider: 'fixture', model: 'owner-one' } } : undefined,
     prepare: async () => selected ? lease(undefined, { finish: async () => { throw new Error('business settlement failed'); }, dispose: () => { disposed++; } }) : undefined,
   });
   try {
@@ -442,6 +463,7 @@ test('unload during deferred None lookup preserves the original native submissio
   const entered = deferred(); const release = deferred();
   const f = await fixture([request => { assert.equal(request.signal?.aborted, false); assert.equal(request.model, 'native-model'); return text('plain submission preserved'); }], {
     isDeliverySession: () => false, ownsPendingTurn: () => false,
+    selectModel: () => undefined,
     prepare: async () => { entered.resolve(); await release.promise; return undefined; },
   });
   try {
@@ -476,7 +498,7 @@ test('None awaiting the previous owner settlement survives unload before its pre
   const f = await fixture([() => text('owned'), request => {
     assert.equal(request.signal?.aborted, false); assert.equal(request.model, 'native-model'); return text('plain after owner settlement');
   }], { isDeliverySession: () => false, ownsPendingTurn: () => selected,
-    prepare: async () => { prepares++; return selected ? lease(undefined, { finish: async () => { finishEntered.resolve(); await releaseFinish.promise; } }) : undefined; },
+    selectModel: () => selected ? { model: { provider: 'fixture', model: 'owner-one' } } : undefined, prepare: async () => { prepares++; return selected ? lease(undefined, { finish: async () => { finishEntered.resolve(); await releaseFinish.promise; } }) : undefined; },
   });
   try {
     const first = f.send('owned turn'); await finishEntered.promise;
@@ -592,7 +614,7 @@ test('switching owner or choosing None retires only plugin context while retaini
     assert.doesNotMatch(visibleText(request), /PRIVATE_(FIRST|SECOND)_(OWNER|KNOWLEDGE)/);
     assert.match(visibleText(request), /NATIVE_PERMISSION_CONTEXT|original user question|first answer|second answer/);
     return text('native answer');
-  }], { isDeliverySession: () => false, prepare: async () => selected ? lease('same-model', {
+  }], { isDeliverySession: () => false, selectModel: () => selected ? { model: { provider: 'fixture', model: 'same-model' } } : undefined, prepare: async () => selected ? lease('same-model', {
     prompt: selected === 'FIRST_OWNER' ? 'PRIVATE_FIRST_OWNER' : 'PRIVATE_SECOND_OWNER',
     taskContext: selected === 'FIRST_OWNER' ? 'PRIVATE_FIRST_KNOWLEDGE' : 'PRIVATE_SECOND_KNOWLEDGE', contextKey: selected,
   }) : undefined }, { inHistory: true });
@@ -665,7 +687,7 @@ test('unload retires restored idle native context even when this plugin never ob
     assert.doesNotMatch(visibleText(request), /UNTRACKED_RESTORED_EMPLOYEE/);
     assert.match(visibleText(request), /RESTORED_NATIVE_POLICY/);
     return text('native after restored idle unload');
-  }], { isDeliverySession: () => false, prepare: async () => { prepared++; return undefined; } }, {
+  }], { isDeliverySession: () => false, selectModel: () => undefined, prepare: async () => { prepared++; return undefined; } }, {
     existing: true, beforeRegister: agent => { agent.session.append('user/message', createUserMessage({ source: { kind: 'runtime-context', form: 'snapshot', sections: restored },
       content: [{ type: 'text', text: joinContextSections(restored) }] }), { surfaceOp: 'append' }); },
   });
@@ -685,7 +707,7 @@ test('restored standalone identity retires on new owner, None and unload while n
       { name: 'digital-worker:identity', text: 'OLD_STANDALONE_IDENTITY_AND_C_KNOWLEDGE' }];
     let prepares = 0;
     const f = await fixture([() => text('native response after handoff')], {
-      isDeliverySession: () => boundary === 'delivery', prepare: async () => {
+      isDeliverySession: () => boundary === 'delivery', selectModel: () => boundary === 'new-owner' ? { model: { provider: 'fixture', model: 'new-owner' } } : undefined, prepare: async () => {
         prepares++; return boundary === 'new-owner' ? lease('new-owner', { prompt: 'NEW_EMPLOYEE_BODY' }) : undefined;
       },
     }, { existing: true, beforeRegister: agent => {
@@ -718,7 +740,7 @@ test('async public context observation merges events received during the read an
   const entered = deferred(); const release = deferred(); let reads = 0;
   let f!: Awaited<ReturnType<typeof fixture>>;
   f = await fixture([() => text('first answer'), () => text('second answer')], {
-    isDeliverySession: () => false, prepare: async () => lease('same-model', { prompt: 'CURRENT_EMPLOYEE' }),
+    isDeliverySession: () => false, selectModel: () => ({ model: { provider: 'fixture', model: 'same-model' } }), prepare: async () => lease('same-model', { prompt: 'CURRENT_EMPLOYEE' }),
     readEvents: async (agent, signal) => {
       reads++;
       const observation = await f.ctx.sessionQuery.observeSession(agent.id, { signal, projectionMode: 'none' });
@@ -739,24 +761,18 @@ test('async public context observation merges events received during the read an
   } finally { release.resolve(); await f.cleanup(); }
 });
 
-test('production context priming uses the already-injected public Session controller when no fixture reader is supplied', async () => {
+test('production context priming uses the injected public Session query without loading or resuming an Agent', async () => {
   let inspections = 0;
   const f = await fixture([() => text('native response')], {
-    readEvents: undefined, isDeliverySession: () => false, prepare: async () => undefined,
+    readEvents: undefined, isDeliverySession: () => false, selectModel: () => undefined, prepare: async () => undefined,
   }, { existing: true, beforeRegister: (agent, ctx) => {
     const restored = [{ name: 'composable-workforce:conversation-workflow', text: 'RESTORED_SCOPE_BEFORE_REGISTRATION' }];
     agent.session.append('user/message', createUserMessage({ source: { kind: 'runtime-context', form: 'snapshot', sections: restored },
       content: [{ type: 'text', text: joinContextSections(restored) }] }), { surfaceOp: 'append' });
-    ctx.provide('sessionController', { inspect: async (sessionId: SessionId, signal?: AbortSignal) => {
-      inspections++;
-      const observation = await ctx.sessionQuery.observeSession(sessionId, { signal, projectionMode: 'none' });
-      try { return { meta: observation.header, inheritedEventCount: observation.inheritedEventCount, events: observation.events }; }
-      finally { observation[Symbol.dispose](); }
-    } } as never);
   } });
   try {
     await f.send('ordinary native question');
-    assert.equal(inspections, 1); assert.equal(f.adapter.requests.length, 1);
+    assert.equal((f.ctx.sessionQuery as FixtureSessionQuery).observations, 1); assert.equal(f.adapter.requests.length, 1);
     assert.doesNotMatch(visibleText(f.adapter.requests[0]!), /RESTORED_SCOPE_BEFORE_REGISTRATION/);
   } finally { await f.cleanup(); }
 });
@@ -766,7 +782,7 @@ test('restored memory results pair repeated call IDs by turn and step without le
     const callId = ToolCallId('provider-reused-call-id');
     const current = workflowContextDefinition('CURRENT_EMPLOYEE', 'current')!;
     const f = await fixture([() => text('continued current employee')], {
-      isDeliverySession: () => false, prepare: async () => lease('same-model', { prompt: 'CURRENT_EMPLOYEE', contextKey: 'current' }),
+      isDeliverySession: () => false, selectModel: () => ({ model: { provider: 'fixture', model: 'same-model' } }), prepare: async () => lease('same-model', { prompt: 'CURRENT_EMPLOYEE', contextKey: 'current' }),
     }, { existing: true, beforeRegister: agent => {
       const owner = (text: string, scope: string) => {
         const definition = workflowContextDefinition(text, scope)!;
@@ -823,7 +839,7 @@ test('switching employee retires private A/B tool bodies while unchanged turns r
       title: 'Private evidence', content: `PRIVATE_${layer}_RETRIEVAL_BODY` }], { maxTokens: 1000, ...(layer === 'A' ? { reason: 'verify' as const } : {}) });
     const f = await fixture([() => call('worker_memory_search'), () => call('native_lookup'), () => text('Public delivered answer'),
       () => text('Same owner answer'), () => text('New owner answer')], {
-      isDeliverySession: () => false, prepare: async () => lease('same-model', { prompt: selected, contextKey: selected,
+      isDeliverySession: () => false, selectModel: () => ({ model: { provider: 'fixture', model: 'same-model' } }), prepare: async () => lease('same-model', { prompt: selected, contextKey: selected,
         taskContext: 'UNCHANGED_KNOWLEDGE_ENTRY', tools: [tool('worker_memory_search', async () => JSON.stringify(packet))] }),
     });
     try {
@@ -849,7 +865,7 @@ test('knowledge replacement and None retire owned memory results inside the next
   for (const boundary of ['knowledge-change', 'none'] as const) {
     let enabled = true; let knowledge = 'KNOWLEDGE_VERSION_ONE';
     const f = await fixture([() => call('worker_memory_write'), () => text('Delivered answer'), () => text('After boundary')], {
-      isDeliverySession: () => false, prepare: async () => enabled ? lease('same-model', { prompt: 'SAME_EMPLOYEE', contextKey: 'same-employee',
+      isDeliverySession: () => false, selectModel: () => enabled ? { model: { provider: 'fixture', model: 'same-model' } } : undefined, prepare: async () => enabled ? lease('same-model', { prompt: 'SAME_EMPLOYEE', contextKey: 'same-employee',
         taskContext: knowledge, tools: [tool('worker_memory_write', async () => JSON.stringify({ id: 'memory-one', content: 'PRIVATE_MEMORY_WRITE_RESULT' }))] }) : undefined,
     });
     try {
@@ -868,7 +884,7 @@ test('memory retirement survives official V4 persistence restore for real-turn N
   for (const boundary of ['none', 'idle-none', 'unload'] as const) {
     let enabled = true;
     const f = await fixture([() => call('worker_memory_search'), () => text('ORIGINAL_DELIVERED_ANSWER'), () => text('native continuation')], {
-      isDeliverySession: () => false, prepare: async () => enabled ? lease('same-model', { prompt: 'RETIRING_EMPLOYEE',
+      isDeliverySession: () => false, selectModel: () => enabled ? { model: { provider: 'fixture', model: 'same-model' } } : undefined, prepare: async () => enabled ? lease('same-model', { prompt: 'RETIRING_EMPLOYEE',
         taskContext: 'RETIRING_C_KNOWLEDGE', tools: [tool('worker_memory_search', async () => 'RETAINED_PRIVATE_MEMORY_RESULT')] }) : undefined,
     });
     try {
@@ -913,7 +929,7 @@ test('stream observation receives native chunks unchanged and an observer failur
 test('official DeepSeek wire serialization preserves the native prefix and formats task data without cache-control inventions', async () => {
   let selected = true;
   const f = await fixture([() => text('first wire answer'), () => text('second wire answer'), () => text('native wire answer')], {
-    isDeliverySession: () => false, prepare: async () => selected ? lease('owner-one', {
+    isDeliverySession: () => false, selectModel: () => selected ? { model: { provider: 'fixture', model: 'owner-one' } } : undefined, prepare: async () => selected ? lease('owner-one', {
       prompt: 'WIRE_EMPLOYEE_DEFINITION', taskContext: 'WIRE_TASK_DATA', contextKey: 'wire-stable-owner', tools: [tool()],
     }) : undefined,
   }, { inHistory: true });
@@ -961,7 +977,7 @@ test('a temporary mention ticket is projected out before native admission while 
     assert.deepEqual(user.content, [{ type: 'text', text: ' 请处理当前附件' }, { type: 'text', text: 'SECOND_NATIVE_TEXT_BLOCK' }]);
     assert.equal(JSON.stringify(request.messages).includes(marker), false);
     return text('same native answer');
-  }], { isDeliverySession: () => false, prepare: async (_agent, _key, request, _signal, context) => {
+  }], { isDeliverySession: () => false, selectModel: () => ({ model: { provider: 'fixture', model: 'same-model' } }), prepare: async (_agent, _key, request, _signal, context) => {
     assert.match(request, /graph-horses-employee/);
     assert.equal(context?.userMessages.length, 1);
     assert.equal(context?.userMessages[0]?.id, originalId);
@@ -985,7 +1001,7 @@ for (const kind of ['marker', 'reserved-text'] as const) test(`a new temporary o
   const f = await fixture([async () => { entered.resolve(); await complete.promise; return call('workflow_fixture'); }], {
     isDeliverySession: () => false,
     isTemporaryEmployeeRequest: (_agent, request) => kind === 'reserved-text' && request === late,
-    prepare: async () => lease('same-model', { tools: [tool()] }),
+    selectModel: () => ({ model: { provider: 'fixture', model: 'same-model' } }), prepare: async () => lease('same-model', { tools: [tool()] }),
   });
   try {
     const sending = f.send('ORIGINAL_OWNER_REQUEST'); await entered.promise;
@@ -1014,4 +1030,75 @@ test('unload recognizes a reserved temporary request per message before asynchro
     assert.ok(cancelledBeforePrepareReturns);
     assert.equal(f.adapter.requests.length, 0);
   } finally { complete.resolve(); await f.cleanup(); }
+});
+
+
+test('a queued owner change captures its route before a previous asynchronous settlement and None restores the native choice', async () => {
+  const settling = deferred(), release = deferred();
+  let selected: string | undefined = 'first-owner';
+  const models: string[] = [];
+  const f = await fixture([
+    request => { models.push(request.model); return text('first done'); },
+    request => { models.push(request.model); return call('workflow_fixture'); },
+    request => { models.push(request.model); return text('second done'); },
+    request => { models.push(request.model); return text('native done'); },
+  ], {
+    isDeliverySession: () => false,
+    selectModel: () => selected ? { model: { provider: 'fixture', model: selected } } : undefined,
+    prepare: async () => selected ? lease(selected, { tools: [tool()], finish: async () => {
+      if (selected === 'first-owner') { settling.resolve(); await release.promise; }
+    } }) : undefined,
+  });
+  try {
+    f.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'first' }] }));
+    await settling.promise;
+    selected = 'second-owner';
+    f.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'second' }] }));
+    release.resolve(); await f.agent.whenIdle(); await new Promise(resolve => setImmediate(resolve));
+    selected = undefined;
+    await f.send('native');
+    assert.deepEqual(models, ['first-owner', 'second-owner', 'second-owner', 'native-model']);
+    assert.equal(f.selection.current?.model, 'native-model');
+  } finally { release.resolve(); await f.cleanup(); }
+});
+
+test('each owner step budgets the current official conditional tool admission instead of the first assembly', async () => {
+  let available = false;
+  const admitted: string[][] = [];
+  const f = await fixture([
+    () => { available = true; return call('workflow_fixture'); },
+    () => text('conditional tools refreshed'),
+  ], {
+    isDeliverySession: () => false,
+    prepare: async () => lease(undefined, { tools: [tool()], beforeStep: async step => { admitted.push(step.assembly!.tools.map(tool => tool.name)); } }),
+  }, { existing: true, beforeRegister: (_agent, ctx) => { ctx.tools.register(tool('native_later'), { when: () => available }); } });
+  try {
+    await f.send('resolve tools per native step');
+    assert.equal(f.adapter.requests.length, 2);
+    assert.equal(admitted[0]!.includes('native_later'), false);
+    assert.equal(admitted[1]!.includes('native_later'), true);
+    assert.deepEqual(admitted, f.adapter.requests.map(request => request.tools!.map(tool => tool.name)));
+  } finally { await f.cleanup(); }
+});
+
+
+test('a native model selection made during an owned turn waits until None while all owner steps keep the captured route', async () => {
+  let owned = true;
+  const f = await fixture([
+    () => { f.agent.model.select({ provider: 'fixture', model: 'native-updated', reasoningEffort: ReasoningEffortId('high') }); return call('workflow_fixture'); },
+    request => { assert.equal(request.model, 'owner-one'); assert.equal(request.reasoningEffort, undefined); return text('owner finished'); },
+    request => { assert.equal(request.model, 'native-updated'); assert.equal(request.reasoningEffort, ReasoningEffortId('high')); return text('native selection restored'); },
+  ], {
+    isDeliverySession: () => false,
+    selectModel: () => owned ? { model: { provider: 'fixture', model: 'owner-one' } } : undefined,
+    prepare: async () => owned ? lease(undefined, { tools: [tool()] }) : undefined,
+  });
+  try {
+    await f.send('owned turn');
+    assert.equal(f.adapter.requests.length, 2);
+    assert.equal(f.selection.current?.model, 'native-updated');
+    owned = false; await f.send('None uses the pending native selection');
+    assert.equal(f.adapter.requests.length, 3);
+    assert.equal(f.agent.session.snapshotEvents().filter(event => event.type === 'turn/end' && event.data.reason.kind === 'error').length, 0);
+  } finally { await f.cleanup(); }
 });

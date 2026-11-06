@@ -2,8 +2,8 @@ import { access, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
 /** Official release targeted by the plugin; runtime checks do not imply full release acceptance. */
-export const harnessVersion = '0.2.1-rc.3';
-export const harnessCommit = '1f81c047fc48fa190a683e469daa699857e9afe8';
+export const harnessVersion = '0.2.2-rc.1';
+export const harnessCommit = '66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db';
 
 /** Keep development, installation, launch and regression tests on one host. */
 export function resolveHarness(root) {

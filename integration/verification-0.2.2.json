@@ -1,0 +1,272 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-07",
+  "plugin": {
+    "name": "dsh-plugin-composable-workforce",
+    "version": "0.2.2",
+    "releaseTag": "v0.2.2",
+    "archive": "dsh-plugin-composable-workforce-0.2.2.tgz",
+    "sha256": "157a4e7e6ae38d5faa9b1e6d624bab59cfc501d7b865f2c84fc83979d497e22e",
+    "bytes": 1324754,
+    "files": 405
+  },
+  "host": {
+    "version": "0.2.2-rc.1",
+    "officialTag": "dsh-v0.2.2-rc.1",
+    "commit": "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
+    "installation": "unmodified official npm release",
+    "node": "24.21.0",
+    "minimumNode": "24.9.0",
+    "platform": "macOS arm64",
+    "programBefore": {
+      "sha256": "bbe1d40afa008e1ed9f839da65a2d32a6291e09eb465e7979fcb9664d6fd354c",
+      "files": 70150
+    },
+    "programAfter": {
+      "sha256": "bbe1d40afa008e1ed9f839da65a2d32a6291e09eb465e7979fcb9664d6fd354c",
+      "files": 70150
+    }
+  },
+  "runtimePeers": {
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/cordis-plugin-loader": "1.1.0",
+    "@deepseek-ai/dsh-agent": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-agent-default-model": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-agent-preset-registry": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-api-session-controller": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-api-workspace-controller": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-connection": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-locale": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-input-trigger": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-workspace": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-compaction": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-permission-presets": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-plugin-manager": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-sandbox": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-sandbox-policy": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-session": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-session-persistence": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-session-projection": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-session-query": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-skill": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-token-meter": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tool-ask-user": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tool-fs": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tool-fs-search": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tool-present": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tool-todo": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tool-web": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-user-approval": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-working-directory": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-workspace": "0.2.2-rc.1"
+  },
+  "checks": {
+    "typecheck": "passed",
+    "build": "passed",
+    "versionAlignment": "passed",
+    "unitTests": {
+      "total": 888,
+      "passed": 887,
+      "failed": 0,
+      "skipped": 1,
+      "cancelled": 0,
+      "durationMs": 241353.086917,
+      "skipReason": "Existing opt-in full private clone test is not enabled"
+    },
+    "archiveLifecycle": {
+      "passed": true,
+      "checks": [
+        "exact archive includes GPL license, corresponding pinned source and dependency lock; packaged shared engine projects only semantic concepts/entities and evidenced directed relations, preserves all reading pages and legacy articles, computes communities without page-link noise, and stops without a residual process",
+        "PDF/DOCX parser dependencies declared by the archive resolve at the exact declared versions inside the isolated profile, without developer-checkout or host dependency links",
+        "fresh actual archive supplies six complete software roles, team and one non-demo software workflow with inputs/outputs/acceptance/rework; no fabricated employees, memory or task executions; boundary documents are packaged",
+        "archive serves the single self-contained Wiki page through authenticated official host routing with network-denying CSP",
+        "official Session Controller model catalog is readable through authenticated plugin API with allowlisted selector fields and creates no employee run",
+        "six software-role presets resolve all required and preferred skills through the official model-invocable registry; QA includes code-review and the packaged task-owned worktree cleanup resource is present",
+        "public default Agent preset lease exposes installed native file/Web/Shell and extension tools plus model-invocable skills through allowlisted capability DTO; employee selections are preferences rather than a second ACL; no model call or task is created",
+        "project brief, task and two manual deliverable revisions persist through authenticated API; idempotent command retry is read-only; stale review is rejected; current version and task review permit project completion without model execution",
+        "default-on librarian switch persists via authenticated official host route; project override leaves template, employees and memories unchanged and survives reinstall",
+        "tarball installed through DSH; isolated employee, memory, project workflow and failed attempt created without an external model request",
+        "uninstall removes bundle and API; restart does not reinstall; profile config and employee data unchanged; native host serves normally",
+        "team librarian archives detached team/member knowledge, creates no extra employee/session, retains knowledge byte-for-byte through ordinary removal and reinstall",
+        "reinstall restores identical templates, employee IDs, required/preferred Skill routing, tool preferences, preserved legacy fields, memory, workflow snapshot and failed attempt, project brief, work tasks, deliverable versions and review history; no duplicate instances or replayed task",
+        "packaged purge command uses official CLI remove, clears dedicated state/config, preserves user deliverables and shared credentials; native host restarts",
+        "official npm installation and dependencies have identical program-file hash before and after install/remove/reinstall/purge"
+      ]
+    },
+    "residentEmployeeBrowser": {
+      "passed": true,
+      "count": 9,
+      "checks": [
+        "default-Chat-native-turns-create-no-resident-binding-employee-or-run",
+        "simple-header-shows-placeholder-then-name-only-menu-without-cards-copy-or-mode-controls",
+        "explicit-selection-affects-only-selected-session-and-browsing-calls-no-model",
+        "two-native-streamed-employee-turns-stay-in-same-conversation-and-choice-survives-reload",
+        "temporary-reference-overrides-resident-only-for-one-turn-preserves-image-and-native-send",
+        "pasted-leading-at-text-routes-through-real-native-send-once-and-restores-resident-next-turn",
+        "busy-employee-conversation-does-not-disable-another-Chat-employee-menu",
+        "none-clears-even-paused-employee-and-temporary-mention-then-restores-native-without-extra-session",
+        "portal-controls-hide-in-resource-panel-and-restore-with-native-conversation"
+      ],
+      "pageErrors": []
+    },
+    "nativeWorkflowBrowser": {
+      "passed": true,
+      "count": 31,
+      "checks": [
+        "unconfigured-native-project-shows-literal-workflow-none-and-explicit-none-installs-or-runs-nothing",
+        "native-input-workflow-upward-menu-none-first-and-frozen-team-installed-without-running",
+        "native-svg-sequence-and-upper-reject-connections-touch-real-circles-avoid-labels-and-native-controls-with-click-through",
+        "first-native-workflow-selection-clears-prior-none-and-unifies-all-project-conversations-without-running",
+        "native-permission-change-keeps-idle-composer-workflow-picker-and-step-navigation-enabled-without-running",
+        "project-name-header-two-tabs-and-read-only-knowledge-view-use-the-frozen-project-team",
+        "details-show-frozen-owner-hierarchy-three-requirements-and-return-target-without-activating-inspected-step",
+        "library-retains-only-three-resource-sections-and-no-project-workspace-or-team-configuration-ui",
+        "zero-one-three-and-zero-return-lanes-keep-native-none-header-body-anchors-and-fixed-step-text-bottom-aligned-with-trajectory",
+        "sixteen-native-language-theme-width-cases-compare-none-zero-three-zero-again-with-identical-native-anchors-and-aligned-text",
+        "narrow-native-return-keeps-true-hidden-target-without-fake-ellipsis-edge-horizontal-scroll-or-click-interception",
+        "numbered-double-ring-nodes-readable-in-dark-light-with-labels-below-compact-height-and-ellipsis-fixed-details-at-wide-narrow-widths",
+        "seven-visible-native-window-holds-first-four-centers-from-five-clamps-the-complete-tail-and-reverses-without-coordinate-jumps-or-running",
+        "numbered-step-circles-retain-global-definition-indices-after-leading-ellipsis-and-current-step-shifts",
+        "later-alternate-workflow-and-none-are-local-persist-after-refresh-and-preserve-project-default-without-running",
+        "top-native-header-steps-click-change-owner-and-roster-without-marking-previous-steps-complete",
+        "ordinary-native-message-uses-current-owner-model-step-criteria-and-required-skill-on-same-session-once",
+        "owner-plan-tool-saves-one-draft-and-its-summary-remains-accessible-in-details-without-project-workbench",
+        "only-real-owner-delivery-review-whitens-completed-step-and-advances-current-blue-without-moving-header",
+        "numbered-double-rings-preserve-gray-white-native-blue-states-and-readable-text-contrast-after-real-acceptance",
+        "running-conversation-shows-stage-while-another-chat-can-switch-workflow-with-shared-progress-protected",
+        "active-native-turn-locks-selector-and-shared-steps-and-rejected-delivery-returns-with-history-retained",
+        "real-nonempty-native-header-step-strip-remains-visible-at-wide-and-narrow-widths",
+        "none-removes-owner-context-tools-and-tracking-and-restores-native-session-and-explicit-model-selection",
+        "removed-delivery-dock-has-no-entry-or-polling-and-none-does-not-select-a-workflow",
+        "late-retained-session-handoff-preserves-user-navigation-to-another-conversation",
+        "stopped-legacy-root-refreshes-same-native-session-with-unsent-draft-and-inherited-selector-no-stale-dock-or-model-call",
+        "ordinary-message-in-legacy-conversation-uses-current-owner-once-and-keeps-old-delivery-unchanged",
+        "explicit-none-in-restored-legacy-conversation-keeps-history-and-review-via-top-details",
+        "retained-handoff-with-unsent-attachment-blocks-refresh-until-user-removes-it-and-safely-retries",
+        "official-host-program-unchanged-and-isolated-process-stopped"
+      ],
+      "pageErrors": [],
+      "processExitCode": 0
+    },
+    "previousPublicArchiveUpgrade": {
+      "archiveSha256": "157a4e7e6ae38d5faa9b1e6d624bab59cfc501d7b865f2c84fc83979d497e22e",
+      "previousArchiveSha256": "8c4d34f8ee68e5a999448e678cb4ea375b7ce238242a88d4620e601ac4cae138",
+      "from": {
+        "plugin": "0.2.1",
+        "dsh": "0.2.1-rc.3"
+      },
+      "to": {
+        "plugin": "0.2.2",
+        "dsh": "0.2.2-rc.1"
+      },
+      "checks": [
+        "official upgrade replaces 0.2.1/plugin.5 without rewriting user state",
+        "custom role, object identities, task history and bundle configuration survive new-host startup",
+        "native session-list RPC remains functional after upgrade"
+      ]
+    },
+    "nativeDeepSeekWithoutPlugin": {
+      "passed": true,
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app"
+      ],
+      "provider": "deepseek-official",
+      "model": "deepseek-flash",
+      "outputLimit": 16,
+      "reasoningEffort": "off",
+      "reply": "OK",
+      "usage": [
+        {
+          "inputTokens": 416,
+          "outputTokens": 1,
+          "cacheReadTokens": 8576,
+          "cacheWriteTokens": 0,
+          "totalTokens": 8993
+        }
+      ],
+      "finish": [
+        {
+          "kind": "stop"
+        }
+      ],
+      "temporaryProfileRemoved": true,
+      "originalCredentialsUnchanged": true
+    },
+    "review": {
+      "independent": true,
+      "actionableFindings": 2,
+      "fixedAndRechecked": 2,
+      "remainingConfirmedBlockers": 0
+    },
+    "archiveInventory": "no host patch/build, credentials, user data, fixtures, local dependency paths or source maps",
+    "reproducibleNpmPack": true,
+    "localInstalledBytesMatchArchive": true
+  },
+  "dependencyAudit": {
+    "pluginProductionOnly": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "pluginWithHostPeers": {
+      "info": 0,
+      "low": 0,
+      "moderate": 2,
+      "high": 53,
+      "critical": 0,
+      "total": 55
+    },
+    "officialHost": {
+      "info": 0,
+      "low": 0,
+      "moderate": 8,
+      "high": 201,
+      "critical": 0,
+      "total": 209
+    },
+    "wikiProgram": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    }
+  },
+  "limits": [
+    "Prerelease: exact DSH 0.2.2-rc.1 only; older Desktop apps retain their matching old archive.",
+    "This release is verified on official npm Web/macOS arm64; current Desktop, Windows and other architectures have not been independently verified.",
+    "PTC consultation can retain the host run_code declaration; execution remains denied. No host executor is replaced.",
+    "Official host dependencies have audit advisories; this plugin does not patch or override host dependencies.",
+    "Native provider smoke proves current transport/generation only, not long-term reliability, quality, performance or guaranteed cache rates. Historical TRANSPORT cause is not retained by the host."
+  ],
+  "evidenceDigests": {
+    "tests.log": "ae978ee5a5cf3de208bf0604360d6b3d0151d038e26de954bb3219a132268471",
+    "build.log": "c82358ebf26cfde473ff132c47386fca7fc9a37a8c6d742cd24e9e482888ecb2",
+    "pack.json": "b2e910aea90840505c911e718e4794f3a9d1b580b4cddce8842d4bed52787c9c",
+    "lifecycle/report.json": "141db9662c00a54a7cc07b63b32f2743f03f33278b55f8e8be3e09a062137e9f",
+    "resident-ui/report.json": "1725b9fbab26bb4d51e3d647d3a90212e3025ea3910d7a72969010e2a2102fb6",
+    "workflow-ui/report.json": "56a15fa5a7c654c10d5470fa0a963e8605963fa946b642d2339237592e6202fe",
+    "upgrade/report.json": "e77db79bcdd1018c0826c59c41fa65d5af28c9cbfc5e8b1b2efb6f978da7d3ab"
+  },
+  "wikiSourceDependencySecurityUpdate": {
+    "package": "js-yaml",
+    "from": "4.1.1",
+    "to": "4.3.2",
+    "targetedTestsPassed": 26,
+    "upstreamSourceHashesUnchanged": true
+  }
+}

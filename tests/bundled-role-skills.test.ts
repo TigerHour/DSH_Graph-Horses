@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -13,7 +14,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
 test('all six role presets resolve to registered model-invocable package skills and task-owned helper resources', async t => {
   const skills = await loadEmployeeSkills(resolve('skills'));
   const presets = JSON.parse(await readFile('skills/software-development-presets.json', 'utf8'));
-  const ctx = new Context(); await ctx.plugin(SkillRegistry); await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime);
+  const ctx = new Context(); await ctx.plugin(SkillRegistry); await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(NativeToolExecutor);
   t.after(() => ctx.fiber.dispose());
   const native = { name: 'unrelated-skill', description: 'other installed plugin', content: 'unrelated' };
   ctx.skills.register(native);

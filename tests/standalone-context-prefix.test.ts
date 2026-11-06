@@ -1,3 +1,4 @@
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native';
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
@@ -60,7 +61,7 @@ async function fixture(t: TestContext, knowledge?: KnowledgeRuntime) {
 
   const ctx = new Context(), adapter = new RecordingAdapter();
   await ctx.plugin(LlmRuntime); await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry);
-  await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime);
+  await ctx.plugin(SystemPrompt); await ctx.plugin(ToolRuntime); await ctx.plugin(NativeToolExecutor);
   await ctx.plugin(SandboxPolicy, { mode: 'workspace-write', workspaceRoot: projectRoot });
   await ctx.plugin(SandboxedFileSystem);
   ctx.provide('shell', { sandboxMode: 'workspace-write' } as never);

@@ -14,13 +14,13 @@ async function fixture() {
   await ctx.plugin(SandboxPolicy, { mode: 'workspace-write', workspaceRoot: '/tmp/native-context-fixture' });
   ctx.provide('shell', { sandboxMode: 'workspace-write' } as never);
   ctx.provide('approval', { config: { policy: 'ask' } } as never);
+  const agents = new Map<string, Agent>();
+  ctx.provide('agents', { get: (id: string) => agents.get(id), list: () => [...agents.values()] } as never);
   await ctx.plugin(PermissionPresets, { presets: {
     'read-only': { sandbox: 'read-only', approval: 'ask' },
     'workspace-write': { sandbox: 'workspace-write', approval: 'ask' },
     'danger-full-access': { sandbox: 'danger-full-access', approval: 'never' },
   } });
-  const agents = new Map<string, Agent>();
-  ctx.provide('agents', { get: (id: string) => agents.get(id) } as never);
   const agent = (id: string) => ({ ctx, session: Session.create(SessionId(id)) }) as Agent;
   return { ctx, agents, agent };
 }

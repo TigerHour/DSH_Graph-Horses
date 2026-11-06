@@ -1,6 +1,6 @@
 # Chat 工作区：常驻员工与临时 @
 
-适用构建：插件 `0.2.1 / v0.2.1-plugin.5`，官方 DSH `0.2.1-rc.3`。用户在 plugin.4 要求收简入口，取代 plugin.3 的处理模式及资料卡下拉。
+当前版本：插件 `0.2.2 / v0.2.2`，官方 DSH `0.2.2-rc.1`，Node `>=24.9.0`；归档与平台验收见[本次记录](../../integration/verification-0.2.2.md)。入口行为延续 `0.2.1 / plugin.5`：用户在 plugin.4 要求收简入口，取代 plugin.3 的处理模式及资料卡下拉。
 
 ## 用户行为
 
@@ -19,6 +19,8 @@ Chat 顶部在项目负责人同一位置显示“选择对话员工”。默认
 读取菜单没有模型调用，也不创建员工、团队、工作流或任务。显式选择时才原子创建/复用工作区独立实例，不复用团队成员，不绕过暂停状态。绑定保存真实 project/session/employee 身份，并以 `expectedRevision + expectedVersion` 比较交换。只有当前忙碌会话限制切换，其他会话仍可操作。员工暂停、转入团队或失效会拒绝执行，但允许空闲时退出，不静默改换人选。
 
 新列表选择使用执行能力。旧轻咨询 API、历史记录和显式配置仍兼容；未执行批量数据迁移。重新在列表选择员工会按当前完整岗位能力绑定。岗位设置和知识资料继续在原有库中管理。
+
+DSH `0.2.2-rc.1` 的工具选择在提示装配前完成，展示 waterfall 不能改写本步可调用集合。旧轻咨询配置采用作用域能力限制和单调执行守卫：原生能力及 Skill 目录可隐藏；PTC 的宿主 `run_code` 传输声明仍可能存在，任何历史或新生成的调用均禁止执行。插件不替换未知 preset／自定义执行器；解除咨询限制后恢复原执行能力。此前轻咨询 API 实验中“PTC 工具声明为零”的结论仅属于旧版宿主，不作为当前承诺。
 
 ## 临时调用的官方入口
 
@@ -46,4 +48,4 @@ Chat uses a compact **Select conversation employee** dropdown containing names a
 
 A composer @ mention selects a temporary employee for this turn in the same native Session, retaining history, attachments, streaming and policies. It never changes the resident selection or creates a separate Chat work-order session. The next turn resumes the resident or native assistant. Public references/codecs and the native default sink send once; bounded, expiring, session-bound tickets validate selected employee references. Direct leading mentions are resolved only from the current real user message using shared deterministic aliases, never from model/tool output or history. No input is replayed or rewritten. A native turn freezes one identity and revalidates authority during execution.
 
-Stable employee/skill/tool definitions remain separate from dynamic knowledge through native context contributions. Previous history and model selection remain subject to native DSH behavior; a model name alone does not indicate residency. Cache reuse is a provider outcome, not a promised percentage. Earlier work orders and their review/handoff paths remain available; project workflows are unchanged.
+Legacy consultation settings prohibit all tool execution through scoped restrictions and a monotonic guard. DSH 0.2.2-rc.1 may retain the host PTC `run_code` declaration; both stale and new calls are denied. The plugin preserves unknown preset/custom executors and does not promise zero PTC declarations. Stable employee/skill/tool definitions remain separate from dynamic knowledge through native context contributions. Previous history and model selection remain subject to native DSH behavior; a model name alone does not indicate residency. Cache reuse is a provider outcome, not a promised percentage. Earlier work orders and their review/handoff paths remain available; project workflows are unchanged.
